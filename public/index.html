@@ -1,44 +1,34 @@
-<!DOCTYPE html><html lang="fr">
+<!DOCTYPE html>
+<html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mini Dashboard Bot</title>  <style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Bot Dashboard Pro</title>
+
+  <style>
     body {
       margin: 0;
-      font-family: Arial, sans-serif;
+      font-family: Arial;
       background: linear-gradient(135deg, #0b1b3a, #142a52);
       color: white;
     }
 
-    .container {
-      padding: 20px;
-    }
+    .container { padding: 20px; }
 
     .card {
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
+      background: rgba(255,255,255,0.08);
       padding: 20px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+      border-radius: 16px;
+      margin-bottom: 15px;
       backdrop-filter: blur(10px);
-      margin-bottom: 20px;
     }
 
-    h1 {
-      font-size: 22px;
-      margin-bottom: 5px;
-      color: #ffd700;
-    }
-
-    p {
-      font-size: 13px;
-      opacity: 0.8;
-    }
+    h1 { color: #ffd700; font-size: 22px; }
 
     input, select {
       width: 100%;
       padding: 12px;
       margin-top: 10px;
-      margin-bottom: 10px;
       border-radius: 10px;
       border: none;
       outline: none;
@@ -47,96 +37,124 @@
     button {
       width: 100%;
       padding: 14px;
+      margin-top: 10px;
       border: none;
       border-radius: 12px;
       background: linear-gradient(90deg, #ffd700, #ffb300);
-      color: #000;
       font-weight: bold;
-      font-size: 15px;
       cursor: pointer;
-      margin-top: 10px;
     }
 
-    button:active {
-      transform: scale(0.98);
+    button:active { transform: scale(0.98); }
+
+    .status {
+      margin-top: 10px;
+      color: #00ff99;
+      font-size: 13px;
     }
 
     .log {
-      font-size: 12px;
-      background: rgba(0,0,0,0.3);
+      background: rgba(0,0,0,0.4);
       padding: 10px;
       border-radius: 10px;
-      height: 120px;
+      font-size: 12px;
+      height: 180px;
       overflow-y: auto;
       white-space: pre-wrap;
     }
+  </style>
+</head>
 
-    .status {
-      font-size: 13px;
-      margin-top: 10px;
-      color: #00ff99;
-    }
-  </style></head>
-<body><div class="container">  <div class="card">
-    <h1>BOT DASHBOARD</h1>
-    <p>Mini panel de test login automatique</p>
-  </div>  <div class="card">
-    <label>Email</label>
-    <input id="email" type="text" placeholder="email@gmail.com" /><label>Mot de passe</label>
-<input id="password" type="password" placeholder="********" />
+<body>
 
-<label>Plateforme</label>
-<select id="platform">
-  <option value="tronpick">TronPick</option>
-  <option value="litepick">LitePick</option>
-  <option value="dogepick">DogePick</option>
-  <option value="solpick">SolPick</option>
-  <option value="binpick">BinPick</option>
-</select>
+<div class="container">
 
-<button onclick="startLogin()">🚀 START LOGIN</button>
+  <div class="card">
+    <h1>🚀 BOT DASHBOARD PRO</h1>
+    <p>Login + Debug + RAW Response</p>
+  </div>
 
-<div class="status" id="status">En attente...</div>
+  <div class="card">
+    <input id="email" placeholder="Email" />
+    <input id="password" type="password" placeholder="Mot de passe" />
 
-  </div>  <div class="card">
-    <h3>Logs</h3>
+    <select id="platform">
+      <option value="tronpick">TronPick</option>
+      <option value="litepick">LitePick</option>
+      <option value="dogepick">DogePick</option>
+      <option value="solpick">SolPick</option>
+      <option value="binpick">BinPick</option>
+    </select>
+
+    <button onclick="startLogin()">🚀 START LOGIN</button>
+
+    <div class="status" id="status">En attente...</div>
+  </div>
+
+  <div class="card">
+    <h3>📡 LOGS (RAW DEBUG)</h3>
     <div class="log" id="log"></div>
-  </div></div><script>
+  </div>
+
+</div>
+
+<script>
+
 function log(msg) {
-  const logBox = document.getElementById('log');
-  logBox.innerText += msg + "\n";
-  logBox.scrollTop = logBox.scrollHeight;
+  const box = document.getElementById('log');
+  box.innerText += msg + "\n";
+  box.scrollTop = box.scrollHeight;
 }
 
 async function startLogin() {
+
   const email = document.getElementById('email').value;
   const password = document.getElementById('password').value;
   const platform = document.getElementById('platform').value;
 
-  document.getElementById('status').innerText = "Connexion en cours...";
-  log("🚀 Début login...");
+  document.getElementById('status').innerText = "Connexion...";
+  log("🚀 START LOGIN");
 
   try {
+
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password, platform })
     });
 
-    const data = await res.json();
+    // 🔥 RAW RESPONSE (IMPORTANT)
+    const text = await res.text();
 
-    log(JSON.stringify(data, null, 2));
+    log("🔴 RAW RESPONSE:");
+    log(text);
+
+    let data;
+
+    try {
+      data = JSON.parse(text);
+      log("🟢 JSON OK");
+      log(JSON.stringify(data, null, 2));
+    } catch (err) {
+      log("❌ RESPONSE NOT JSON");
+      document.getElementById('status').innerText = "Erreur serveur";
+      return;
+    }
 
     if (data.success) {
-      document.getElementById('status').innerText = data.reused ? "♻️ Session réutilisée" : "✅ Login réussi";
+      document.getElementById('status').innerText =
+        data.reused ? "♻️ Session réutilisée" : "✅ Login réussi";
     } else {
       document.getElementById('status').innerText = "❌ Échec login";
     }
 
   } catch (err) {
-    log("Erreur: " + err.message);
-    document.getElementById('status').innerText = "Erreur serveur";
+    log("❌ ERROR: " + err.message);
+    document.getElementById('status').innerText = "Erreur réseau";
   }
 }
-</script></body>
+
+</script>
+
+</body>
 </html>
