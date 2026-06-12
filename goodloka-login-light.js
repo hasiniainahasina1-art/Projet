@@ -1,32 +1,22 @@
-// goodloka-login.js – Auto-login GoodLoka (sans proxy, sans chiffrement)
+// goodloka-login-light.js – Login GoodLoka + inspection, sans sauvegarde GitHub
 const { connect } = require('puppeteer-real-browser');
-const { Octokit } = require('@octokit/rest');
-const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-// ---------- Variables d'environnement ----------
 const phone    = process.env.PHONE;
 const password = process.env.PASSWORD;
-const GH_TOKEN = process.env.GH_TOKEN;
-const GH_USERNAME = process.env.GH_USERNAME;
-const GH_REPO = process.env.GH_REPO;
-const GH_BRANCH = process.env.GH_BRANCH || 'main';
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
     process.exit(1);
 }
 
-const USER_FILE = `goodloka_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.json`;
-
-const videosDir = path.join(__dirname, 'videos');
-if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
+const screenshotsDir = path.join(__dirname, 'screenshots');
+if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
-// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -72,67 +62,60 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-// --- Sauvegarde (sans chiffrement) ---
-async function saveAccount(accountData) {
-    const octokit = new Octokit({ auth: GH_TOKEN });
-    const maxRetries = 3;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            let sha = null;
-            try {
-                const res = await octokit.repos.getContent({
-                    owner: GH_USERNAME, repo: GH_REPO, path: USER_FILE, ref: GH_BRANCH
-                });
-                sha = res.data.sha;
-            } catch (e) {}
-            const content = Buffer.from(JSON.stringify(accountData, null, 2)).toString('base64');
-            await octokit.repos.createOrUpdateFileContents({
-                owner: GH_USERNAME, repo: GH_REPO, path: USER_FILE,
-                message: `Login GoodLoka ${phone}`,
-                content, branch: GH_BRANCH, sha
-            });
-            console.log(`💾 Compte sauvegardé dans ${USER_FILE}`);
-            return;
-        } catch (err) {
-            if (err.status === 409 && attempt < maxRetries) {
-                console.warn(`⚠️ Conflit 409, tentative ${attempt}/${maxRetries}`);
-                await delay(1000 * attempt);
-            } else throw err;
-        }
-    }
-}
+async function inspectDominoPage(page) {
+    console.log('🔍 Inspection de la page de dominos...');
+    await delay(5000);
+    await page.screenshot({ path: path.join(screenshotsDir, 'domino_page.png'), fullPage: true });
+    console.log('📸 Capture sauvegardée (domino_page.png)');
 
-// --- Capture vidéo ---
-function startFFmpeg(videoPath) {
-    const display = process.env.DISPLAY || ':99';
-    const args = [
-        '-f', 'x11grab',
-        '-video_size', '1280x720',
-        '-i', display,
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '0',
-        '-pix_fmt', 'yuv420p',
-        '-y',
-        videoPath
-    ];
-    const ffmpeg = spawn('ffmpeg', args, { stdio: 'inherit' });
-    console.log(`🎥 FFmpeg démarré sur ${display} → ${videoPath}`);
-    return ffmpeg;
-}
-function stopFFmpeg(ffmpeg) {
-    return new Promise((resolve) => {
-        ffmpeg.on('close', resolve);
-        ffmpeg.kill('SIGINT');
+    // Lister les inputs
+    const inputs = await page.$$eval('input', els =>
+        els.map(el => ({
+            type: el.type || 'text',
+            name: el.name || '',
+            id: el.id || '',
+            placeholder: el.placeholder || '',
+            className: el.className || '',
+            visible: el.offsetParent !== null,
+            value: el.value ? el.value.substring(0, 20) : ''
+        }))
+    );
+    console.log('📝 Champs input :');
+    inputs.forEach((inp, i) => {
+        console.log(`  ${i+1}. type="${inp.type}" name="${inp.name}" id="${inp.id}" placeholder="${inp.placeholder}" visible=${inp.visible}`);
+    });
+
+    // Lister les boutons
+    const buttons = await page.$$eval('button', els =>
+        els.map(el => ({
+            text: el.textContent.trim().substring(0, 50),
+            id: el.id || '',
+            className: el.className || '',
+            visible: el.offsetParent !== null
+        }))
+    );
+    console.log('🔘 Boutons :');
+    buttons.forEach((b, i) => {
+        console.log(`  ${i+1}. "${b.text}" id="${b.id}" class="${b.className}" visible=${b.visible}`);
+    });
+
+    // Lister les liens
+    const links = await page.$$eval('a', els =>
+        els.map(el => ({
+            text: el.textContent.trim().substring(0, 50),
+            href: el.href || '',
+            visible: el.offsetParent !== null
+        }))
+    );
+    console.log('🔗 Liens :');
+    links.forEach((l, i) => {
+        console.log(`  ${i+1}. "${l.text}" href="${l.href}" visible=${l.visible}`);
     });
 }
 
-// --- Main ---
 (async () => {
-    const videoPath = path.join(videosDir, `goodloka_login_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
-    let ffmpegProcess, browser;
+    let browser;
     try {
-        // Connexion sans proxy (directe)
         const { browser: br, page } = await connect({
             headless: false,
             turnstile: false,
@@ -141,24 +124,16 @@ function stopFFmpeg(ffmpeg) {
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
-        ffmpegProcess = startFFmpeg(videoPath);
-        await delay(1000);
-
-        // 1. Aller sur la page de login
+        // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         console.log(`🌐 Navigation vers ${loginUrl}`);
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
-        // 2. Remplir les champs (sélecteurs corrigés grâce à l'inspection)
-        // Téléphone : premier input texte avec le placeholder "Ex : 034xxxxxxx"
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
-        // Mot de passe : input password
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await randomDelay(500, 1500);
 
-        // 3. Clic sur le bouton "Se connecter"
-        console.log('🔍 Recherche du bouton "Se connecter"...');
         const loginBtnCoords = await page.evaluate(() => {
             const btns = [...document.querySelectorAll('button')];
             const loginBtn = btns.find(b => b.textContent.trim() === 'Se connecter');
@@ -170,40 +145,32 @@ function stopFFmpeg(ffmpeg) {
             await humanClickAt(page, loginBtnCoords);
             console.log('🖱️ Clic sur "Se connecter"');
         } else {
-            console.log('⚠️ Bouton non trouvé, appui sur Entrée');
             await page.keyboard.press('Enter');
         }
         await delay(5000);
 
-        // 4. Vérifier que l'on n'est plus sur la page de login
         const currentUrl = page.url();
         if (currentUrl.includes('login')) {
-            throw new Error('Échec de connexion (toujours sur la page login)');
+            throw new Error('Échec de connexion');
         }
         console.log('✅ Connexion réussie');
 
-        // 5. Récupérer les cookies
+        // 2. Aller sur la page de dominos
+        const dominoUrl = 'https://domino.goodloka.com/';
+        console.log(`🎲 Navigation vers ${dominoUrl}`);
+        await page.goto(dominoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+        // 3. Inspecter la page de jeu
+        await inspectDominoPage(page);
+
+        // 4. Récupérer les cookies (affichage console uniquement)
         const cookies = await page.cookies();
-        console.log(`🍪 Cookies récupérés : ${cookies.length}`);
+        console.log(`🍪 ${cookies.length} cookies récupérés (non sauvegardés)`);
 
-        await stopFFmpeg(ffmpegProcess);
-        await browser.close();
-
-        // 6. Sauvegarde du compte (en clair)
-        const account = {
-            phone,
-            password,          // ⚠️ stocké en clair (pas de chiffrement)
-            cookies,
-            cookiesStatus: 'valid',
-            lastLogin: Date.now()
-        };
-        await saveAccount(account);
-
-        console.log('🎉 Script terminé avec succès.');
+        console.log('🎉 Inspection terminée avec succès.');
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
-        if (ffmpegProcess) await stopFFmpeg(ffmpegProcess);
         if (browser) await browser.close();
         process.exit(1);
     }
