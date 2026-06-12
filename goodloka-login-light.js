@@ -1,4 +1,4 @@
-// goodloka-login-light.js – Login + inspection dominos (corrigé)
+// goodloka-login-light.js – Login + inspection de games/list puis clic vers domino
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -47,11 +47,12 @@ async function fillFieldHuman(page, selector, value, fieldName) {
     }
 }
 
-async function inspectDominoPage(page) {
-    console.log('🔍 Inspection de la page de dominos...');
-    await delay(5000);
-    await page.screenshot({ path: path.join(screenshotsDir, 'domino_page.png'), fullPage: true });
-    console.log('📸 Capture sauvegardée (domino_page.png)');
+async function inspectPage(page, label) {
+    console.log(`🔍 Inspection de la page : ${label}`);
+    await delay(3000);
+    const filename = label.replace(/[^a-zA-Z0-9]/g, '_') + '.png';
+    await page.screenshot({ path: path.join(screenshotsDir, filename), fullPage: true });
+    console.log(`📸 Capture sauvegardée (${filename})`);
 
     // Lister les inputs
     const inputs = await page.$$eval('input', els =>
@@ -60,7 +61,6 @@ async function inspectDominoPage(page) {
             name: el.name || '',
             id: el.id || '',
             placeholder: el.placeholder || '',
-            className: el.className || '',
             visible: el.offsetParent !== null,
             value: el.value ? el.value.substring(0, 20) : ''
         }))
@@ -96,6 +96,8 @@ async function inspectDominoPage(page) {
     links.forEach((l, i) => {
         console.log(`  ${i+1}. "${l.text}" href="${l.href}" visible=${l.visible}`);
     });
+
+    return { buttons, links };
 }
 
 (async () => {
@@ -109,43 +111,83 @@ async function inspectDominoPage(page) {
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
-        // 1. Aller sur la page de login
+        // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         console.log(`🌐 Navigation vers ${loginUrl}`);
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
-        // 2. Remplir les champs
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await randomDelay(500, 1500);
 
-        // 3. Appuyer sur Entrée (plus fiable que le clic sur le bouton)
         console.log('⏎ Appui sur Entrée pour valider la connexion...');
         await page.keyboard.press('Enter');
 
-        // 4. Attendre que l'URL ne contienne plus "login"
+        // 2. Attendre la redirection (URL ne contenant plus "login")
         console.log('⏳ Attente de la redirection...');
         try {
             await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 });
         } catch (e) {
             console.warn('⚠️ Redirection non détectée, on continue...');
         }
-        // Pause supplémentaire pour la stabilisation
         await delay(5000);
         console.log(`📍 URL actuelle : ${page.url()}`);
 
-        // 5. Récupérer les cookies (ils devraient être présents maintenant)
+        // 3. Récupérer les cookies (s'ils existent)
         const cookies = await page.cookies();
         console.log(`🍪 Cookies récupérés : ${cookies.length}`);
 
-        // 6. Aller sur la page de dominos
-        const dominoUrl = 'https://domino.goodloka.com/';
-        console.log(`🎲 Navigation vers ${dominoUrl}`);
-        await page.goto(dominoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        // 4. Inspecter la page après connexion (normalement games/list)
+        await inspectPage(page, 'games_list');
 
-        // 7. Inspecter la page de jeu
-        await inspectDominoPage(page);
+        // 5. Chercher un lien ou bouton qui mène au domino
+        console.log('🔍 Recherche d\'un élément pour aller au domino...');
+        const dominoElement = await page.evaluate(() => {
+            // Chercher d'abord un lien dont le texte contient "domino" ou "Domino"
+            const links = [...document.querySelectorAll('a')];
+            const dominoLink = links.find(a => /domino/i.test(a.textContent));
+            if (dominoLink) return { type: 'link', text: dominoLink.textContent.trim(), href: dominoLink.href };
+
+            // Sinon chercher un bouton
+            const buttons = [...document.querySelectorAll('button')];
+            const dominoBtn = buttons.find(b => /domino/i.test(b.textContent));
+            if (dominoBtn) return { type: 'button', text: dominoBtn.textContent.trim() };
+
+            // Essayer avec "jouer" ou "play"
+            const playLink = links.find(a => /jouer|play/i.test(a.textContent));
+            if (playLink) return { type: 'link', text: playLink.textContent.trim(), href: playLink.href };
+
+            return null;
+        });
+
+        if (dominoElement) {
+            console.log(`🎯 Élément trouvé : "${dominoElement.text}" (${dominoElement.type})`);
+            if (dominoElement.type === 'link') {
+                await page.goto(dominoElement.href, { waitUntil: 'networkidle2', timeout: 60000 });
+            } else {
+                // Clic sur le bouton (coordonnées)
+                const coords = await page.evaluate(() => {
+                    const btn = [...document.querySelectorAll('button')].find(b => /domino/i.test(b.textContent));
+                    if (!btn) return null;
+                    const rect = btn.getBoundingClientRect();
+                    return { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+                });
+                if (coords) {
+                    // On utilise une fonction de clic humain simple (déjà définie plus haut) mais ici on va juste cliquer normalement
+                    await page.mouse.click(coords.x, coords.y);
+                }
+            }
+            await delay(5000);
+            console.log(`📍 URL après clic : ${page.url()}`);
+
+            // 6. Inspecter la page domino
+            await inspectPage(page, 'domino');
+        } else {
+            console.log('⚠️ Aucun élément domino trouvé sur la page games/list. Voici la liste des liens et boutons :');
+            // On reliste pour aider
+            await inspectPage(page, 'games_list_bis');
+        }
 
         console.log('🎉 Inspection terminée avec succès.');
         await browser.close();
