@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: '20'
       - run: npm install puppeteer-real-browser
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
       - name: Exécuter l'inspection
         env:
           PHONE: ${{ github.event.inputs.phone }}
@@ -32,5 +32,7 @@ jobs:
           node goodloka-login-light.js
       - uses: actions/upload-artifact@v4
         with:
-          name: domino-screenshots
-          path: screenshots/
+          name: domino-artifacts
+          path: |
+            screenshots/
+            videos/
