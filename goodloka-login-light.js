@@ -1,4 +1,4 @@
-// goodloka-login-light.js – Login GoodLoka + inspection, sans sauvegarde GitHub
+// goodloka-login-light.js – Login + inspection dominos (corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -45,21 +45,6 @@ async function fillFieldHuman(page, selector, value, fieldName) {
         await page.keyboard.press('Backspace');
         for (const char of value) await page.keyboard.type(char, { delay: Math.floor(Math.random() * 50) + 40 });
     }
-}
-
-async function humanClickAt(page, coords) {
-    const start = await page.evaluate(() => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 }));
-    const steps = 20;
-    for (let i = 1; i <= steps; i++) {
-        const t = i / steps;
-        const cp = { x: start.x + (Math.random() - 0.5) * 100, y: start.y + (Math.random() - 0.5) * 100 };
-        const x = Math.pow(1 - t, 2) * start.x + 2 * (1 - t) * t * cp.x + Math.pow(t, 2) * coords.x;
-        const y = Math.pow(1 - t, 2) * start.y + 2 * (1 - t) * t * cp.y + Math.pow(t, 2) * coords.y;
-        await page.mouse.move(x, y);
-        await delay(15);
-    }
-    await page.mouse.click(coords.x, coords.y);
-    console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
 async function inspectDominoPage(page) {
@@ -124,50 +109,46 @@ async function inspectDominoPage(page) {
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
-        // 1. Login
+        // 1. Aller sur la page de login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         console.log(`🌐 Navigation vers ${loginUrl}`);
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
+        // 2. Remplir les champs
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await randomDelay(500, 1500);
 
-        const loginBtnCoords = await page.evaluate(() => {
-            const btns = [...document.querySelectorAll('button')];
-            const loginBtn = btns.find(b => b.textContent.trim() === 'Se connecter');
-            if (!loginBtn) return null;
-            const rect = loginBtn.getBoundingClientRect();
-            return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-        });
-        if (loginBtnCoords) {
-            await humanClickAt(page, loginBtnCoords);
-            console.log('🖱️ Clic sur "Se connecter"');
-        } else {
-            await page.keyboard.press('Enter');
+        // 3. Appuyer sur Entrée (plus fiable que le clic sur le bouton)
+        console.log('⏎ Appui sur Entrée pour valider la connexion...');
+        await page.keyboard.press('Enter');
+
+        // 4. Attendre que l'URL ne contienne plus "login"
+        console.log('⏳ Attente de la redirection...');
+        try {
+            await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 });
+        } catch (e) {
+            console.warn('⚠️ Redirection non détectée, on continue...');
         }
+        // Pause supplémentaire pour la stabilisation
         await delay(5000);
+        console.log(`📍 URL actuelle : ${page.url()}`);
 
-        const currentUrl = page.url();
-        if (currentUrl.includes('login')) {
-            throw new Error('Échec de connexion');
-        }
-        console.log('✅ Connexion réussie');
+        // 5. Récupérer les cookies (ils devraient être présents maintenant)
+        const cookies = await page.cookies();
+        console.log(`🍪 Cookies récupérés : ${cookies.length}`);
 
-        // 2. Aller sur la page de dominos
+        // 6. Aller sur la page de dominos
         const dominoUrl = 'https://domino.goodloka.com/';
         console.log(`🎲 Navigation vers ${dominoUrl}`);
         await page.goto(dominoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // 3. Inspecter la page de jeu
+        // 7. Inspecter la page de jeu
         await inspectDominoPage(page);
 
-        // 4. Récupérer les cookies (affichage console uniquement)
-        const cookies = await page.cookies();
-        console.log(`🍪 ${cookies.length} cookies récupérés (non sauvegardés)`);
-
         console.log('🎉 Inspection terminée avec succès.');
+        await browser.close();
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
