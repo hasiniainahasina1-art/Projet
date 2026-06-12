@@ -1,4 +1,4 @@
-name: GoodLoka Login
+name: GoodLoka Login Light
 
 on:
   workflow_dispatch:
@@ -19,22 +19,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install puppeteer-real-browser @octokit/rest
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
-      - name: Exécuter le login
+      - run: npm install puppeteer-real-browser
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+      - name: Exécuter l'inspection
         env:
           PHONE: ${{ github.event.inputs.phone }}
           PASSWORD: ${{ github.event.inputs.password }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_USERNAME: ${{ secrets.GH_USERNAME }}
-          GH_REPO: ${{ secrets.GH_REPO }}
           DISPLAY: ':99'
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-login.js
-      - name: Upload vidéo
-        uses: actions/upload-artifact@v4
+          node goodloka-login-light.js
+      - uses: actions/upload-artifact@v4
         with:
-          name: goodloka-login-video
-          path: videos/
+          name: domino-screenshots
+          path: screenshots/
