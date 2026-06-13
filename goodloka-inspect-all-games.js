@@ -1,4 +1,4 @@
-// goodloka-inspect-join-details.js – Login, clic sécurisé sur "Jouer", extraction des conditions
+// goodloka-inspect-all-games.js – Extrait les conditions de toutes les parties disponibles sur la page domino
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -20,7 +20,6 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
-// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -77,24 +76,48 @@ function stopFFmpeg(ffmpeg) {
     return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
 }
 
-// --- Extraction des conditions de la partie adverse ---
-async function extractGameConditions(page) {
+// --- Extraction des conditions de toutes les parties ---
+async function extractAllGamesConditions(page) {
     return await page.evaluate(() => {
-        const joinBtn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Rejoindre');
-        if (!joinBtn) return null;
+        const games = [];
+        // Trouver tous les boutons "Rejoindre"
+        const btns = [...document.querySelectorAll('button')];
+        const joinBtns = btns.filter(b => b.textContent.trim() === 'Rejoindre');
 
-        let container = joinBtn.closest('.game-card, .match-item, .room-item, .table-row, li, div[class*="game"], div[class*="match"], div[class*="room"]');
-        if (!container) {
-            container = joinBtn.parentElement?.parentElement?.parentElement;
+        joinBtns.forEach((btn, index) => {
+            // Remonter au conteneur de la carte de jeu (plusieurs niveaux possibles)
+            let container = btn.closest('.game-card, .match-item, .room-item, .table-row, li, div[class*="game"], div[class*="match"], div[class*="room"]');
+            if (!container) {
+                container = btn.parentElement?.parentElement?.parentElement;
+            }
+            if (container) {
+                const text = container.textContent.replace(/\s+/g, ' ').trim();
+                games.push({
+                    index,
+                    text
+                });
+            }
+        });
+
+        // Si aucun conteneur trouvé, on prend le parent immédiat du bouton
+        if (games.length === 0) {
+            joinBtns.forEach((btn, i) => {
+                const parent = btn.parentElement;
+                if (parent) {
+                    games.push({
+                        index: i,
+                        text: parent.textContent.replace(/\s+/g, ' ').trim()
+                    });
+                }
+            });
         }
-        if (!container) return null;
 
-        return container.textContent.replace(/\s+/g, ' ').trim();
+        return games;
     });
 }
 
 (async () => {
-    const videoPath = path.join(videosDir, `goodloka_join_details_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
+    const videoPath = path.join(videosDir, `goodloka_all_games_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
     let ffmpegProcess, browser;
     try {
         const { browser: br, page } = await connect({
@@ -138,79 +161,74 @@ async function extractGameConditions(page) {
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
-        // 3. Attendre qu'un lien "Jouer" soit visible et cliquer dessus
+        // 3. Cliquer sur le premier lien "Jouer" (domino)
         console.log('⏳ Attente du premier lien "Jouer"...');
+        let jouerClicked = false;
         try {
-            // Attendre qu'au moins un lien "Jouer" apparaisse
             await page.waitForSelector('a', { visible: true, timeout: 15000 });
-            // Chercher parmi tous les liens celui qui contient exactement "Jouer"
-            const jouerLink = await page.evaluateHandle(() => {
+            const jouerHandle = await page.evaluateHandle(() => {
                 const links = [...document.querySelectorAll('a')];
                 return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
             });
-            if (jouerLink) {
-                // Obtenir les coordonnées pour un clic humain
-                const box = await jouerLink.boundingBox();
+            if (jouerHandle) {
+                const box = await jouerHandle.boundingBox();
                 if (box) {
-                    const coords = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-                    console.log(`🖱️ Clic sur "Jouer" à (${Math.round(coords.x)}, ${Math.round(coords.y)})`);
-                    await humanClickAt(page, coords);
+                    await humanClickAt(page, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+                    jouerClicked = true;
                 } else {
-                    // Fallback : clic direct via evaluate
-                    await jouerLink.evaluate(el => el.click());
+                    await jouerHandle.evaluate(el => el.click());
+                    jouerClicked = true;
                 }
+                await jouerHandle.dispose();
             } else {
-                // Dernier recours : cliquer sur le premier lien "Jouer" par JavaScript
                 const clicked = await page.evaluate(() => {
                     const links = [...document.querySelectorAll('a')];
                     const jouer = links.find(a => a.textContent.trim() === 'Jouer');
                     if (jouer) { jouer.click(); return true; }
                     return false;
                 });
-                if (!clicked) throw new Error('Aucun lien "Jouer" trouvé');
+                jouerClicked = clicked;
             }
         } catch (err) {
-            console.warn('⚠️ Impossible de cliquer sur "Jouer", capture de l\'état actuel...');
-            await page.screenshot({ path: path.join(screenshotsDir, 'error_no_jouer.png'), fullPage: true });
-            // Ne pas arrêter le script, on peut essayer d'aller directement sur domino si token connu
-            // Pour l'instant on continue sans erreur fatale
+            console.warn('⚠️ Erreur lors du clic sur "Jouer" :', err.message);
+        }
+        if (!jouerClicked) {
+            console.log('⚠️ Impossible de cliquer sur "Jouer". On continue quand même avec l\'URL actuelle.');
         }
         await delay(5000);
-        console.log(`📍 URL après clic sur Jouer : ${page.url()}`);
+        console.log(`📍 URL après tentative de clic : ${page.url()}`);
 
-        // 4. Capture avant extraction
-        await page.screenshot({ path: path.join(screenshotsDir, 'domino_before_extract.png'), fullPage: true });
+        // 4. Capturer la page complète
+        await page.screenshot({ path: path.join(screenshotsDir, 'domino_all_games.png'), fullPage: true });
 
-        // 5. Chercher le bouton "Rejoindre" et extraire les conditions
-        const joinBtn = await page.$('button:has-text("Rejoindre")');
-        if (!joinBtn) {
-            console.log('⚠️ Aucun bouton "Rejoindre" trouvé. Capture de la page.');
-            await page.screenshot({ path: path.join(screenshotsDir, 'no_join_button.png'), fullPage: true });
+        // 5. Extraire les conditions de chaque partie disponible
+        const games = await extractAllGamesConditions(page);
+        if (games.length === 0) {
+            console.log('⚠️ Aucune partie disponible (aucun bouton "Rejoindre" trouvé).');
         } else {
-            const conditions = await extractGameConditions(page);
-            if (conditions) {
-                console.log('📋 Conditions de la partie adverse :');
-                console.log(conditions);
-            } else {
-                console.log('⚠️ Impossible d\'extraire les conditions. Textes autour du bouton :');
-                const parentText = await joinBtn.evaluate(el => el.parentElement?.textContent?.trim() || '');
-                console.log(parentText);
-            }
+            console.log(`📋 ${games.length} partie(s) trouvée(s) :`);
+            games.forEach((game, i) => {
+                console.log(`\n--- Partie #${i + 1} ---`);
+                console.log(game.text);
+            });
+        }
 
-            // Clic sur "Rejoindre" pour voir la modale (même si solde insuffisant)
-            console.log('🖱️ Clic sur "Rejoindre" pour inspecter la modale...');
-            await joinBtn.click();
+        // 6. Tenter d'ouvrir une fenêtre de détails en cliquant sur le bouton "info-btn" (si présent)
+        const infoBtn = await page.$('button.info-btn');
+        if (infoBtn) {
+            console.log('🖱️ Clic sur le bouton info pour voir les détails supplémentaires...');
+            await infoBtn.click();
             await delay(3000);
-            await page.screenshot({ path: path.join(screenshotsDir, 'after_join_click.png'), fullPage: true });
-
-            const newTexts = await page.$$eval('*', els =>
-                els
-                    .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
+            await page.screenshot({ path: path.join(screenshotsDir, 'info_modal.png'), fullPage: true });
+            const modalTexts = await page.$$eval('*', els =>
+                els.filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
                     .map(el => el.textContent.trim().substring(0, 100))
                     .slice(0, 20)
             );
-            console.log('📝 Textes après clic :');
-            newTexts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
+            console.log('📝 Textes dans la modale info :');
+            modalTexts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
+        } else {
+            console.log('ℹ️ Aucun bouton info-btn trouvé pour afficher plus de détails.');
         }
 
         await stopFFmpeg(ffmpegProcess);
