@@ -1,4 +1,4 @@
-// goodloka-inspect-join-details.js – Login, aller sur la page domino, extraire les détails de la partie adverse
+// goodloka-inspect-join-details.js – Login, clic sécurisé sur "Jouer", extraction des conditions
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -51,6 +51,21 @@ async function fillFieldHuman(page, selector, value, fieldName) {
     }
 }
 
+async function humanClickAt(page, coords) {
+    const start = await page.evaluate(() => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 }));
+    const steps = 20;
+    for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const cp = { x: start.x + (Math.random() - 0.5) * 100, y: start.y + (Math.random() - 0.5) * 100 };
+        const x = Math.pow(1 - t, 2) * start.x + 2 * (1 - t) * t * cp.x + Math.pow(t, 2) * coords.x;
+        const y = Math.pow(1 - t, 2) * start.y + 2 * (1 - t) * t * cp.y + Math.pow(t, 2) * coords.y;
+        await page.mouse.move(x, y);
+        await delay(15);
+    }
+    await page.mouse.click(coords.x, coords.y);
+    console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
+}
+
 function startFFmpeg(videoPath) {
     const display = process.env.DISPLAY || ':99';
     const args = ['-f','x11grab','-video_size','1280x720','-i',display,'-c:v','libx264','-preset','ultrafast','-crf','0','-pix_fmt','yuv420p','-y',videoPath];
@@ -64,22 +79,17 @@ function stopFFmpeg(ffmpeg) {
 
 // --- Extraction des conditions de la partie adverse ---
 async function extractGameConditions(page) {
-    // On cherche le conteneur qui englobe le bouton "Rejoindre" et tous les détails
     return await page.evaluate(() => {
         const joinBtn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Rejoindre');
         if (!joinBtn) return null;
 
-        // Remonter au conteneur parent le plus proche qui contient les infos (mise, score…)
         let container = joinBtn.closest('.game-card, .match-item, .room-item, .table-row, li, div[class*="game"], div[class*="match"], div[class*="room"]');
         if (!container) {
-            // Fallback : remonter de 2 ou 3 niveaux
             container = joinBtn.parentElement?.parentElement?.parentElement;
         }
         if (!container) return null;
 
-        // Récupérer tout le texte visible du conteneur
-        const fullText = container.textContent.replace(/\s+/g, ' ').trim();
-        return fullText;
+        return container.textContent.replace(/\s+/g, ' ').trim();
     });
 }
 
@@ -122,43 +132,59 @@ async function extractGameConditions(page) {
         await delay(5000);
         console.log(`📍 URL après connexion : ${page.url()}`);
 
-        // 2. Aller sur la liste des jeux et cliquer sur le premier "Jouer"
+        // 2. Aller sur la liste des jeux
         const gamesListUrl = 'https://www.goodloka.com/games/list';
+        console.log(`🎮 Navigation vers ${gamesListUrl}`);
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
-        console.log('🔍 Recherche du premier lien "Jouer"...');
-        const clicked = await page.evaluate(() => {
-            const links = [...document.querySelectorAll('a')];
-            const jouerLink = links.find(a => a.textContent.trim() === 'Jouer');
-            if (jouerLink) {
-                jouerLink.click();
-                return true;
-            }
-            return false;
-        });
-        if (!clicked) {
-            const parentClicked = await page.evaluate(() => {
+        // 3. Attendre qu'un lien "Jouer" soit visible et cliquer dessus
+        console.log('⏳ Attente du premier lien "Jouer"...');
+        try {
+            // Attendre qu'au moins un lien "Jouer" apparaisse
+            await page.waitForSelector('a', { visible: true, timeout: 15000 });
+            // Chercher parmi tous les liens celui qui contient exactement "Jouer"
+            const jouerLink = await page.evaluateHandle(() => {
                 const links = [...document.querySelectorAll('a')];
-                const jouerLink = links.find(a => a.textContent.trim() === 'Jouer');
-                if (jouerLink && jouerLink.parentElement) {
-                    jouerLink.parentElement.click();
-                    return true;
-                }
-                return false;
+                return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
             });
-            if (!parentClicked) throw new Error('Impossible de cliquer sur Jouer');
+            if (jouerLink) {
+                // Obtenir les coordonnées pour un clic humain
+                const box = await jouerLink.boundingBox();
+                if (box) {
+                    const coords = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+                    console.log(`🖱️ Clic sur "Jouer" à (${Math.round(coords.x)}, ${Math.round(coords.y)})`);
+                    await humanClickAt(page, coords);
+                } else {
+                    // Fallback : clic direct via evaluate
+                    await jouerLink.evaluate(el => el.click());
+                }
+            } else {
+                // Dernier recours : cliquer sur le premier lien "Jouer" par JavaScript
+                const clicked = await page.evaluate(() => {
+                    const links = [...document.querySelectorAll('a')];
+                    const jouer = links.find(a => a.textContent.trim() === 'Jouer');
+                    if (jouer) { jouer.click(); return true; }
+                    return false;
+                });
+                if (!clicked) throw new Error('Aucun lien "Jouer" trouvé');
+            }
+        } catch (err) {
+            console.warn('⚠️ Impossible de cliquer sur "Jouer", capture de l\'état actuel...');
+            await page.screenshot({ path: path.join(screenshotsDir, 'error_no_jouer.png'), fullPage: true });
+            // Ne pas arrêter le script, on peut essayer d'aller directement sur domino si token connu
+            // Pour l'instant on continue sans erreur fatale
         }
         await delay(5000);
         console.log(`📍 URL après clic sur Jouer : ${page.url()}`);
 
-        // 3. Prendre une capture de la page avant extraction
+        // 4. Capture avant extraction
         await page.screenshot({ path: path.join(screenshotsDir, 'domino_before_extract.png'), fullPage: true });
 
-        // 4. Chercher le bouton "Rejoindre" et extraire les conditions
+        // 5. Chercher le bouton "Rejoindre" et extraire les conditions
         const joinBtn = await page.$('button:has-text("Rejoindre")');
         if (!joinBtn) {
-            console.log('⚠️ Aucun bouton "Rejoindre" trouvé. Capture de la page actuelle.');
+            console.log('⚠️ Aucun bouton "Rejoindre" trouvé. Capture de la page.');
             await page.screenshot({ path: path.join(screenshotsDir, 'no_join_button.png'), fullPage: true });
         } else {
             const conditions = await extractGameConditions(page);
@@ -166,19 +192,17 @@ async function extractGameConditions(page) {
                 console.log('📋 Conditions de la partie adverse :');
                 console.log(conditions);
             } else {
-                console.log('⚠️ Impossible d\'extraire les conditions. Voici les textes visibles autour du bouton :');
-                // Extraire le texte du parent immédiat
+                console.log('⚠️ Impossible d\'extraire les conditions. Textes autour du bouton :');
                 const parentText = await joinBtn.evaluate(el => el.parentElement?.textContent?.trim() || '');
                 console.log(parentText);
             }
 
-            // Optionnel : cliquer sur "Rejoindre" pour voir la modale et capturer plus d'infos
-            console.log('🖱️ Clic sur "Rejoindre" pour voir les détails supplémentaires...');
+            // Clic sur "Rejoindre" pour voir la modale (même si solde insuffisant)
+            console.log('🖱️ Clic sur "Rejoindre" pour inspecter la modale...');
             await joinBtn.click();
             await delay(3000);
             await page.screenshot({ path: path.join(screenshotsDir, 'after_join_click.png'), fullPage: true });
 
-            // Afficher les nouveaux textes apparus (ex: message de solde insuffisant)
             const newTexts = await page.$$eval('*', els =>
                 els
                     .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
