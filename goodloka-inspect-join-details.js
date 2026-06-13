@@ -1,4 +1,4 @@
-// goodloka-inspect-join.js – Login + aller sur domino + cliquer sur "Rejoindre" pour voir les conditions
+// goodloka-inspect-join-details.js – Login, aller sur la page domino, extraire les détails de la partie adverse
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -51,57 +51,6 @@ async function fillFieldHuman(page, selector, value, fieldName) {
     }
 }
 
-async function inspectPage(page, label) {
-    console.log(`🔍 Inspection de la page : ${label}`);
-    await delay(3000);
-    const filename = label.replace(/[^a-zA-Z0-9]/g, '_') + '.png';
-    await page.screenshot({ path: path.join(screenshotsDir, filename), fullPage: true });
-    console.log(`📸 Capture sauvegardée (${filename})`);
-
-    // Lister tous les textes visibles (pour capturer mise, score, etc.)
-    const allTexts = await page.$$eval('*', els =>
-        els
-            .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
-            .map(el => el.textContent.trim().substring(0, 100))
-            .slice(0, 30)
-    );
-    console.log('📝 Textes visibles :');
-    allTexts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
-
-    // Lister les inputs
-    const inputs = await page.$$eval('input', els =>
-        els.map(el => ({
-            type: el.type || 'text', name: el.name || '', id: el.id || '',
-            placeholder: el.placeholder || '', visible: el.offsetParent !== null,
-            value: el.value ? el.value.substring(0, 20) : ''
-        }))
-    );
-    console.log('📝 Champs input :');
-    inputs.forEach((inp, i) => console.log(`  ${i+1}. type="${inp.type}" name="${inp.name}" id="${inp.id}" placeholder="${inp.placeholder}" visible=${inp.visible}`));
-
-    // Lister les boutons
-    const buttons = await page.$$eval('button', els =>
-        els.map(el => ({
-            text: el.textContent.trim().substring(0, 50), id: el.id || '',
-            className: el.className || '', visible: el.offsetParent !== null
-        }))
-    );
-    console.log('🔘 Boutons :');
-    buttons.forEach((b, i) => console.log(`  ${i+1}. "${b.text}" id="${b.id}" class="${b.className}" visible=${b.visible}`));
-
-    // Lister les liens
-    const links = await page.$$eval('a', els =>
-        els.map(el => ({
-            text: el.textContent.trim().substring(0, 50), href: el.href || '',
-            visible: el.offsetParent !== null
-        }))
-    );
-    console.log('🔗 Liens :');
-    links.forEach((l, i) => console.log(`  ${i+1}. "${l.text}" href="${l.href}" visible=${l.visible}`));
-
-    return { inputs, buttons, links, texts: allTexts };
-}
-
 function startFFmpeg(videoPath) {
     const display = process.env.DISPLAY || ':99';
     const args = ['-f','x11grab','-video_size','1280x720','-i',display,'-c:v','libx264','-preset','ultrafast','-crf','0','-pix_fmt','yuv420p','-y',videoPath];
@@ -113,8 +62,29 @@ function stopFFmpeg(ffmpeg) {
     return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
 }
 
+// --- Extraction des conditions de la partie adverse ---
+async function extractGameConditions(page) {
+    // On cherche le conteneur qui englobe le bouton "Rejoindre" et tous les détails
+    return await page.evaluate(() => {
+        const joinBtn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Rejoindre');
+        if (!joinBtn) return null;
+
+        // Remonter au conteneur parent le plus proche qui contient les infos (mise, score…)
+        let container = joinBtn.closest('.game-card, .match-item, .room-item, .table-row, li, div[class*="game"], div[class*="match"], div[class*="room"]');
+        if (!container) {
+            // Fallback : remonter de 2 ou 3 niveaux
+            container = joinBtn.parentElement?.parentElement?.parentElement;
+        }
+        if (!container) return null;
+
+        // Récupérer tout le texte visible du conteneur
+        const fullText = container.textContent.replace(/\s+/g, ' ').trim();
+        return fullText;
+    });
+}
+
 (async () => {
-    const videoPath = path.join(videosDir, `goodloka_join_inspect_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
+    const videoPath = path.join(videosDir, `goodloka_join_details_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
     let ffmpegProcess, browser;
     try {
         const { browser: br, page } = await connect({
@@ -150,14 +120,10 @@ function stopFFmpeg(ffmpeg) {
             await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 });
         } catch (e) { console.warn('⚠️ Redirection non détectée'); }
         await delay(5000);
-        console.log(`📍 URL actuelle : ${page.url()}`);
-
-        const cookies = await page.cookies();
-        console.log(`🍪 Cookies récupérés : ${cookies.length}`);
+        console.log(`📍 URL après connexion : ${page.url()}`);
 
         // 2. Aller sur la liste des jeux et cliquer sur le premier "Jouer"
         const gamesListUrl = 'https://www.goodloka.com/games/list';
-        console.log(`🎮 Navigation vers ${gamesListUrl}`);
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
@@ -172,7 +138,6 @@ function stopFFmpeg(ffmpeg) {
             return false;
         });
         if (!clicked) {
-            console.log('⚠️ Clic direct sur le lien échoué, tentative sur le parent...');
             const parentClicked = await page.evaluate(() => {
                 const links = [...document.querySelectorAll('a')];
                 const jouerLink = links.find(a => a.textContent.trim() === 'Jouer');
@@ -182,37 +147,46 @@ function stopFFmpeg(ffmpeg) {
                 }
                 return false;
             });
-            if (!parentClicked) console.log('⚠️ Aucun clic possible');
+            if (!parentClicked) throw new Error('Impossible de cliquer sur Jouer');
         }
         await delay(5000);
         console.log(`📍 URL après clic sur Jouer : ${page.url()}`);
 
-        // 3. Sur la page domino, chercher le bouton "Rejoindre"
-        console.log('🔍 Recherche du bouton "Rejoindre"...');
-        const joinButtonInfo = await page.evaluate(() => {
-            const btns = [...document.querySelectorAll('button')];
-            const joinBtn = btns.find(b => b.textContent.trim() === 'Rejoindre');
-            if (!joinBtn) return null;
-            const rect = joinBtn.getBoundingClientRect();
-            return {
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2,
-                text: joinBtn.textContent.trim(),
-                className: joinBtn.className,
-                visible: joinBtn.offsetParent !== null
-            };
-        });
+        // 3. Prendre une capture de la page avant extraction
+        await page.screenshot({ path: path.join(screenshotsDir, 'domino_before_extract.png'), fullPage: true });
 
-        if (joinButtonInfo && joinButtonInfo.visible) {
-            console.log(`🖱️ Clic sur "Rejoindre" à (${Math.round(joinButtonInfo.x)}, ${Math.round(joinButtonInfo.y)})`);
-            await page.mouse.click(joinButtonInfo.x, joinButtonInfo.y);
-            await delay(3000);
-
-            // 4. Inspecter la page après le clic (modale ou nouvelle page)
-            await inspectPage(page, 'join_conditions');
+        // 4. Chercher le bouton "Rejoindre" et extraire les conditions
+        const joinBtn = await page.$('button:has-text("Rejoindre")');
+        if (!joinBtn) {
+            console.log('⚠️ Aucun bouton "Rejoindre" trouvé. Capture de la page actuelle.');
+            await page.screenshot({ path: path.join(screenshotsDir, 'no_join_button.png'), fullPage: true });
         } else {
-            console.log('⚠️ Bouton "Rejoindre" non trouvé ou invisible. Voici l\'état actuel :');
-            await inspectPage(page, 'domino_no_join');
+            const conditions = await extractGameConditions(page);
+            if (conditions) {
+                console.log('📋 Conditions de la partie adverse :');
+                console.log(conditions);
+            } else {
+                console.log('⚠️ Impossible d\'extraire les conditions. Voici les textes visibles autour du bouton :');
+                // Extraire le texte du parent immédiat
+                const parentText = await joinBtn.evaluate(el => el.parentElement?.textContent?.trim() || '');
+                console.log(parentText);
+            }
+
+            // Optionnel : cliquer sur "Rejoindre" pour voir la modale et capturer plus d'infos
+            console.log('🖱️ Clic sur "Rejoindre" pour voir les détails supplémentaires...');
+            await joinBtn.click();
+            await delay(3000);
+            await page.screenshot({ path: path.join(screenshotsDir, 'after_join_click.png'), fullPage: true });
+
+            // Afficher les nouveaux textes apparus (ex: message de solde insuffisant)
+            const newTexts = await page.$$eval('*', els =>
+                els
+                    .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
+                    .map(el => el.textContent.trim().substring(0, 100))
+                    .slice(0, 20)
+            );
+            console.log('📝 Textes après clic :');
+            newTexts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
         }
 
         await stopFFmpeg(ffmpegProcess);
