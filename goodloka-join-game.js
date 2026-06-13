@@ -1,24 +1,15 @@
-// goodloka-join-game.js – Rejoint une partie selon critères (sans vidéo)
+// goodloka-create-game.js – Créer une partie et inspecter les options
 const { connect } = require('puppeteer-real-browser');
-const { Octokit } = require('@octokit/rest');
 const path = require('path');
 const fs = require('fs');
 
 const phone    = process.env.PHONE;
 const password = process.env.PASSWORD;
-const searchScore     = process.env.SCORE ? parseInt(process.env.SCORE) : null;
-const searchMise      = process.env.MISE ? parseInt(process.env.MISE) : null;
-const searchCondition = process.env.CONDITION || null;
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
     process.exit(1);
 }
-
-console.log('🔍 Critères de recherche :');
-console.log(`   Score     : ${searchScore ?? 'peu importe'}`);
-console.log(`   Mise      : ${searchMise ?? 'peu importe'}`);
-console.log(`   Condition : ${searchCondition || 'peu importe'}`);
 
 const screenshotsDir = path.join(__dirname, 'screenshots');
 if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
@@ -72,53 +63,60 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-// --- Extraction des parties ---
-async function extractGamesWithButtons(page) {
-    return await page.evaluate(() => {
-        const games = [];
-        const allButtons = [...document.querySelectorAll('button')];
-        const joinBtns = allButtons.filter(b => b.textContent.trim() === 'Rejoindre');
+// --- Inspection détaillée de la page (modale) ---
+async function inspectPage(page, label) {
+    console.log(`\n🔍 Inspection : ${label}`);
+    await delay(2000);
+    const filename = label.replace(/[^a-zA-Z0-9]/g, '_') + '.png';
+    await page.screenshot({ path: path.join(screenshotsDir, filename), fullPage: true });
+    console.log(`📸 Capture : ${filename}`);
 
-        joinBtns.forEach((btn, index) => {
-            let container = btn;
-            while (container) {
-                const parent = container.parentElement;
-                if (!parent) break;
-                const joinCount = [...parent.querySelectorAll('button')]
-                    .filter(b => b.textContent.trim() === 'Rejoindre').length;
-                if (joinCount === 1) {
-                    container = parent;
-                } else {
-                    break;
-                }
-            }
-            const text = container.textContent.replace(/\s+/g, ' ').trim();
-            games.push({ index, text });
-        });
-        return games;
+    // Textes visibles courts
+    const texts = await page.$$eval('*', els =>
+        els
+            .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
+            .map(el => el.textContent.trim().substring(0, 80))
+            .slice(0, 30)
+    );
+    console.log('📝 Textes visibles :');
+    texts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
+
+    // Champs input
+    const inputs = await page.$$eval('input', els =>
+        els.map(el => ({
+            type: el.type || 'text',
+            placeholder: el.placeholder || '',
+            value: el.value || '',
+            visible: el.offsetParent !== null
+        }))
+    );
+    console.log('📝 Champs input :');
+    inputs.forEach((inp, i) => console.log(`  ${i+1}. type="${inp.type}" placeholder="${inp.placeholder}" value="${inp.value}" visible=${inp.visible}`));
+
+    // Boutons
+    const buttons = await page.$$eval('button', els =>
+        els.map(el => ({
+            text: el.textContent.trim().substring(0, 40),
+            className: el.className || '',
+            visible: el.offsetParent !== null
+        }))
+    );
+    console.log('🔘 Boutons :');
+    buttons.forEach((b, i) => console.log(`  ${i+1}. "${b.text}" class="${b.className}" visible=${b.visible}`));
+
+    // Sélecteurs (dropdown)
+    const selects = await page.$$eval('select', els =>
+        els.map(el => ({
+            options: [...el.options].map(o => o.textContent.trim()),
+            visible: el.offsetParent !== null
+        }))
+    );
+    console.log('📋 Sélecteurs :');
+    selects.forEach((s, i) => {
+        console.log(`  ${i+1}. options: [${s.options.join(' | ')}] visible=${s.visible}`);
     });
-}
 
-// --- Parsing d'une carte de partie ---
-function parseGameText(text) {
-    const info = { score: null, mise: null, condition: null, creator: null };
-    const scoreMatch = text.match(/Classique\s+(\d+)/);
-    if (scoreMatch) info.score = parseInt(scoreMatch[1]);
-    const miseMatch = text.match(/(\d[\d\s]*)\s*MGA\s*Rejoindre/);
-    if (miseMatch) info.mise = parseInt(miseMatch[1].replace(/\s/g, ''));
-    const condMatch = text.match(/[<>]\s*\d+/);
-    if (condMatch) info.condition = condMatch[0].replace(/\s/g, '');
-    const afterScore = text.replace(/.*?Classique\s+\d+\s*/, '');
-    const beforeMise = afterScore.split(/\d[\d\s]*MGA/)[0];
-    info.creator = beforeMise.trim().split(',')[0].trim();
-    return info;
-}
-
-function matchesCriteria(gameInfo, sScore, sMise, sCond) {
-    if (sScore !== null && gameInfo.score !== sScore) return false;
-    if (sMise !== null && gameInfo.mise !== sMise) return false;
-    if (sCond && gameInfo.condition !== sCond) return false;
-    return true;
+    return { texts, inputs, buttons, selects };
 }
 
 (async () => {
@@ -169,72 +167,29 @@ function matchesCriteria(gameInfo, sScore, sMise, sCond) {
         await delay(5000);
         console.log(`📍 Page domino : ${page.url()}`);
 
-        // 3. Attendre les boutons Rejoindre
-        try { await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 30000 }); } catch (e) {
-            await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-            await delay(5000);
-        }
+        // 3. Inspecter la page avant création
+        await inspectPage(page, 'before_create');
 
-        // 4. Boucle de recherche (max 5 minutes)
-        const MAX_WAIT_MS = 5 * 60 * 1000;
-        const RELOAD_INTERVAL = 30000;
-        const startWait = Date.now();
-        let lastReload = 0;
-        let foundIndex = -1;
-
-        console.log('⏳ Recherche de la partie idéale...');
-        while (Date.now() - startWait < MAX_WAIT_MS) {
-            const games = await extractGamesWithButtons(page);
-            console.log(`🔎 ${games.length} partie(s) visible(s)`);
-
-            let bestMatch = null;
-            for (const game of games) {
-                const info = parseGameText(game.text);
-                console.log(`   Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition ?? 'aucune'}, créateur="${info.creator}"`);
-                if (matchesCriteria(info, searchScore, searchMise, searchCondition)) {
-                    bestMatch = game;
-                    break;
-                }
-            }
-
-            if (bestMatch) {
-                console.log(`✅ Partie correspondante trouvée (Index ${bestMatch.index})`);
-                const btns = await page.$$('button');
-                const joinBtns = [];
-                for (const btn of btns) {
-                    const txt = await page.evaluate(el => el.textContent.trim(), btn);
-                    if (txt === 'Rejoindre') joinBtns.push(btn);
-                }
-                if (bestMatch.index < joinBtns.length) {
-                    await joinBtns[bestMatch.index].click();
-                    console.log('🖱️ Clic sur Rejoindre');
-                    foundIndex = bestMatch.index;
-                    break;
-                }
-            }
-
-            if (Date.now() - lastReload >= RELOAD_INTERVAL) {
-                console.log('🔄 Rafraîchissement...');
-                await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-                lastReload = Date.now();
-                await delay(5000);
-                try { await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 15000 }); } catch (e) {}
-            } else {
-                await delay(10000);
-            }
-        }
-
-        if (foundIndex >= 0) {
-            await delay(3000);
-            console.log(`📍 URL après clic : ${page.url()}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'joined_game.png'), fullPage: true });
-            console.log('🎉 Partie rejointe !');
+        // 4. Cliquer sur "Créer une partie"
+        console.log('🖱️ Recherche du bouton "Créer une partie"...');
+        const createBtn = await page.$('button:has-text("Créer une partie")');
+        if (createBtn) {
+            await createBtn.click();
+            console.log('✅ Clic sur "Créer une partie"');
         } else {
-            await page.screenshot({ path: path.join(screenshotsDir, 'no_match.png'), fullPage: true });
-            console.log('⚠️ Aucune partie trouvée après 5 minutes.');
+            console.log('⚠️ Bouton "Créer une partie" introuvable');
         }
+        await delay(3000);
+
+        // 5. Inspecter la modale de création
+        const modalInfo = await inspectPage(page, 'creation_modal');
+
+        // 6. Garder la page ouverte 1 minute pour observation
+        console.log('⏳ Attente 1 minute pour observation...');
+        await delay(60000);
 
         await browser.close();
+        console.log('🎉 Inspection terminée.');
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
