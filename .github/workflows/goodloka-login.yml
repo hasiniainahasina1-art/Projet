@@ -1,4 +1,4 @@
-name: Inspect Create Game Options
+name: Create Game and Wait
 
 on:
   workflow_dispatch:
@@ -9,11 +9,23 @@ on:
       password:
         description: 'Mot de passe'
         required: true
+      score:
+        description: 'Score (défaut: 50)'
+        required: false
+        default: '50'
+      mise:
+        description: 'Mise (défaut: 200)'
+        required: false
+        default: '200'
+      joueurs:
+        description: 'Nombre de joueurs (2 ou 3)'
+        required: false
+        default: '2'
 
 jobs:
-  inspect:
+  create:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,17 +33,20 @@ jobs:
           node-version: '20'
       - run: npm install puppeteer-real-browser
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
-      - name: Exécuter l'inspection
+      - name: Exécuter la création et l'attente
         env:
           PHONE: ${{ github.event.inputs.phone }}
           PASSWORD: ${{ github.event.inputs.password }}
+          SCORE: ${{ github.event.inputs.score }}
+          MISE: ${{ github.event.inputs.mise }}
+          JOUEURS: ${{ github.event.inputs.joueurs }}
           DISPLAY: ':99'
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-create-game.js
+          node goodloka-create-and-wait.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: create-game-screenshots
+          name: game-screenshots
           path: screenshots/
