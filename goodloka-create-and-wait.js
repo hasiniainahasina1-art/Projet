@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (version complète)
+// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -90,35 +90,37 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Inspection approfondie des dominos adverses ---
+// --- Inspection approfondie des dominos adverses (corrigée) ---
 async function inspectDominoes(page) {
     console.log('🔍 Inspection approfondie du plateau...');
-    await delay(10000); // laisser le temps au plateau de s'afficher
+    await delay(10000);
     await page.screenshot({ path: path.join(screenshotsDir, 'game_board.png'), fullPage: true });
 
     const dominoElements = await page.$$eval('*', els =>
         els
             .filter(el => {
-                // Méthode 1 : classes courantes
-                const cls = (el.className || '').toLowerCase();
-                if (/domino|tile|piece|bone|double|pip/.test(cls)) return true;
+                try {
+                    // Méthode 1 : classes courantes
+                    const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+                    if (/domino|tile|piece|bone|double|pip/.test(cls)) return true;
 
-                // Méthode 2 : texte contenant un motif genre "4:2" ou "4-2"
-                const text = el.textContent.trim();
-                if (/\d+\s*[:\-]\s*\d+/.test(text)) return true;
+                    // Méthode 2 : texte contenant un motif genre "4:2" ou "4-2"
+                    const text = (el.textContent || '').trim();
+                    if (/\d+\s*[:\-]\s*\d+/.test(text)) return true;
 
-                // Méthode 3 : caractères Unicode domino (plage 1F030-1F09F)
-                for (const ch of text) {
-                    const cp = ch.codePointAt(0);
-                    if (cp >= 0x1F030 && cp <= 0x1F09F) return true;
-                }
+                    // Méthode 3 : caractères Unicode domino (plage 1F030-1F09F)
+                    for (const ch of text) {
+                        const cp = ch.codePointAt(0);
+                        if (cp >= 0x1F030 && cp <= 0x1F09F) return true;
+                    }
+                } catch (e) {}
                 return false;
             })
             .map(el => ({
                 tag: el.tagName,
-                class: el.className,
+                class: (typeof el.className === 'string' ? el.className : ''),
                 id: el.id,
-                text: el.textContent.trim().substring(0, 30),
+                text: (el.textContent || '').trim().substring(0, 30),
                 rect: el.getBoundingClientRect(),
                 html: el.outerHTML.substring(0, 200)
             }))
@@ -130,7 +132,6 @@ async function inspectDominoes(page) {
         if (d.html) console.log(`      HTML: ${d.html}`);
     });
 
-    // Si rien trouvé, afficher un extrait du conteneur de jeu pour diagnostic
     if (dominoElements.length === 0) {
         console.log('⚠️ Aucun domino trouvé. Affichage du conteneur de jeu pour diagnostic :');
         const boardHTML = await page.evaluate(() => {
