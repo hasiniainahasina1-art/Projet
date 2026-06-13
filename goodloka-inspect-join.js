@@ -1,4 +1,4 @@
-// goodloka-login-light.js – Login + clic sur "Jouer" + inspection + pas de popup Save password
+// goodloka-inspect-join.js – Login + aller sur domino + cliquer sur "Rejoindre" pour voir les conditions
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -58,6 +58,17 @@ async function inspectPage(page, label) {
     await page.screenshot({ path: path.join(screenshotsDir, filename), fullPage: true });
     console.log(`📸 Capture sauvegardée (${filename})`);
 
+    // Lister tous les textes visibles (pour capturer mise, score, etc.)
+    const allTexts = await page.$$eval('*', els =>
+        els
+            .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
+            .map(el => el.textContent.trim().substring(0, 100))
+            .slice(0, 30)
+    );
+    console.log('📝 Textes visibles :');
+    allTexts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
+
+    // Lister les inputs
     const inputs = await page.$$eval('input', els =>
         els.map(el => ({
             type: el.type || 'text', name: el.name || '', id: el.id || '',
@@ -68,6 +79,7 @@ async function inspectPage(page, label) {
     console.log('📝 Champs input :');
     inputs.forEach((inp, i) => console.log(`  ${i+1}. type="${inp.type}" name="${inp.name}" id="${inp.id}" placeholder="${inp.placeholder}" visible=${inp.visible}`));
 
+    // Lister les boutons
     const buttons = await page.$$eval('button', els =>
         els.map(el => ({
             text: el.textContent.trim().substring(0, 50), id: el.id || '',
@@ -77,6 +89,7 @@ async function inspectPage(page, label) {
     console.log('🔘 Boutons :');
     buttons.forEach((b, i) => console.log(`  ${i+1}. "${b.text}" id="${b.id}" class="${b.className}" visible=${b.visible}`));
 
+    // Lister les liens
     const links = await page.$$eval('a', els =>
         els.map(el => ({
             text: el.textContent.trim().substring(0, 50), href: el.href || '',
@@ -86,7 +99,7 @@ async function inspectPage(page, label) {
     console.log('🔗 Liens :');
     links.forEach((l, i) => console.log(`  ${i+1}. "${l.text}" href="${l.href}" visible=${l.visible}`));
 
-    return { inputs, buttons, links };
+    return { inputs, buttons, links, texts: allTexts };
 }
 
 function startFFmpeg(videoPath) {
@@ -101,10 +114,9 @@ function stopFFmpeg(ffmpeg) {
 }
 
 (async () => {
-    const videoPath = path.join(videosDir, `goodloka_session_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
+    const videoPath = path.join(videosDir, `goodloka_join_inspect_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
     let ffmpegProcess, browser;
     try {
-        // 🚫 Lancement de Chrome SANS la popup Save password
         const { browser: br, page } = await connect({
             headless: false,
             turnstile: false,
@@ -140,14 +152,15 @@ function stopFFmpeg(ffmpeg) {
         await delay(5000);
         console.log(`📍 URL actuelle : ${page.url()}`);
 
-        // 2. Récupérer les cookies
         const cookies = await page.cookies();
         console.log(`🍪 Cookies récupérés : ${cookies.length}`);
 
-        // 3. Inspecter games/list
-        await inspectPage(page, 'games_list');
+        // 2. Aller sur la liste des jeux et cliquer sur le premier "Jouer"
+        const gamesListUrl = 'https://www.goodloka.com/games/list';
+        console.log(`🎮 Navigation vers ${gamesListUrl}`);
+        await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await delay(5000);
 
-        // 4. Cliquer sur le premier "Jouer" (domino)
         console.log('🔍 Recherche du premier lien "Jouer"...');
         const clicked = await page.evaluate(() => {
             const links = [...document.querySelectorAll('a')];
@@ -158,7 +171,6 @@ function stopFFmpeg(ffmpeg) {
             }
             return false;
         });
-
         if (!clicked) {
             console.log('⚠️ Clic direct sur le lien échoué, tentative sur le parent...');
             const parentClicked = await page.evaluate(() => {
@@ -170,15 +182,38 @@ function stopFFmpeg(ffmpeg) {
                 }
                 return false;
             });
-            if (!parentClicked) {
-                console.log('⚠️ Aucun clic possible, on continue sans...');
-            }
+            if (!parentClicked) console.log('⚠️ Aucun clic possible');
         }
         await delay(5000);
-        console.log(`📍 URL après tentative de clic : ${page.url()}`);
+        console.log(`📍 URL après clic sur Jouer : ${page.url()}`);
 
-        // 5. Inspecter la page de jeu
-        await inspectPage(page, 'domino_game');
+        // 3. Sur la page domino, chercher le bouton "Rejoindre"
+        console.log('🔍 Recherche du bouton "Rejoindre"...');
+        const joinButtonInfo = await page.evaluate(() => {
+            const btns = [...document.querySelectorAll('button')];
+            const joinBtn = btns.find(b => b.textContent.trim() === 'Rejoindre');
+            if (!joinBtn) return null;
+            const rect = joinBtn.getBoundingClientRect();
+            return {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2,
+                text: joinBtn.textContent.trim(),
+                className: joinBtn.className,
+                visible: joinBtn.offsetParent !== null
+            };
+        });
+
+        if (joinButtonInfo && joinButtonInfo.visible) {
+            console.log(`🖱️ Clic sur "Rejoindre" à (${Math.round(joinButtonInfo.x)}, ${Math.round(joinButtonInfo.y)})`);
+            await page.mouse.click(joinButtonInfo.x, joinButtonInfo.y);
+            await delay(3000);
+
+            // 4. Inspecter la page après le clic (modale ou nouvelle page)
+            await inspectPage(page, 'join_conditions');
+        } else {
+            console.log('⚠️ Bouton "Rejoindre" non trouvé ou invisible. Voici l\'état actuel :');
+            await inspectPage(page, 'domino_no_join');
+        }
 
         await stopFFmpeg(ffmpegProcess);
         await browser.close();
