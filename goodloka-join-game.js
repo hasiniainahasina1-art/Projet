@@ -104,7 +104,7 @@ function parseGameText(text) {
     const info = { score: null, mise: null, condition: null, creator: null };
     const scoreMatch = text.match(/Classique\s+(\d+)/);
     if (scoreMatch) info.score = parseInt(scoreMatch[1]);
-    const miseMatch = text.match(/(\d[\d\s]*)\s*MGA/);
+    const miseMatch = text.match(/(\d[\d\s]*)\s*MGA\s*Rejoindre/);
     if (miseMatch) info.mise = parseInt(miseMatch[1].replace(/\s/g, ''));
     const condMatch = text.match(/[<>]\s*\d+/);
     if (condMatch) info.condition = condMatch[0].replace(/\s/g, '');
