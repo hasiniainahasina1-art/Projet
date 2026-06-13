@@ -1,4 +1,4 @@
-// goodloka-login-light.js – Login + clic sur "Jouer" + inspection + fermeture popup save password
+// goodloka-login-light.js – Login + clic sur "Jouer" + inspection + pas de popup Save password
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -19,25 +19,6 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
-
-// --- Fermeture de la popup "Save password" (Chrome) ---
-async function dismissSavePasswordPopup(page) {
-    try {
-        // Attendre que la popup Chrome apparaisse (max 5 secondes)
-        const popupSelector = 'button:has(span:text("Never")), button:has(span:text("No thanks"))';
-        await page.waitForSelector(popupSelector, { timeout: 5000 });
-        // Cliquer sur le premier bouton "Never" ou "No thanks"
-        const button = await page.$(popupSelector);
-        if (button) {
-            await button.click();
-            console.log('✅ Popup "Save password" fermée');
-            await delay(1000);
-        }
-    } catch (e) {
-        // La popup n'est pas apparue, on continue
-        console.log('ℹ️ Aucune popup "Save password" détectée');
-    }
-}
 
 // --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
@@ -123,7 +104,16 @@ function stopFFmpeg(ffmpeg) {
     const videoPath = path.join(videosDir, `goodloka_session_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
     let ffmpegProcess, browser;
     try {
-        const { browser: br, page } = await connect({ headless: false, turnstile: false, args: ['--no-sandbox'] });
+        // 🚫 Lancement de Chrome SANS la popup Save password
+        const { browser: br, page } = await connect({
+            headless: false,
+            turnstile: false,
+            args: [
+                '--no-sandbox',
+                '--disable-save-password-bubble',
+                '--disable-features=PasswordManager'
+            ]
+        });
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
@@ -150,9 +140,7 @@ function stopFFmpeg(ffmpeg) {
         await delay(5000);
         console.log(`📍 URL actuelle : ${page.url()}`);
 
-        // 2. Fermer la popup "Save password" si elle apparaît
-        await dismissSavePasswordPopup(page);
-
+        // 2. Récupérer les cookies
         const cookies = await page.cookies();
         console.log(`🍪 Cookies récupérés : ${cookies.length}`);
 
