@@ -28,8 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install puppeteer-real-browser
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
+      - run: npm install puppeteer-real-browser @octokit/rest
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
       - name: Exécuter la recherche
         env:
           PHONE: ${{ github.event.inputs.phone }}
@@ -43,8 +43,7 @@ jobs:
           sleep 2
           node goodloka-join-game.js
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: join-game-artifacts
-          path: |
-            screenshots/
-            videos/
+          name: join-game-screenshots
+          path: screenshots/
