@@ -1,4 +1,4 @@
-name: Inspect Join Conditions
+name: Inspect Game Conditions
 
 on:
   workflow_dispatch:
@@ -29,10 +29,10 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-inspect-join.js
+          node goodloka-inspect-join-details.js
       - uses: actions/upload-artifact@v4
         with:
-          name: join-conditions
+          name: game-conditions
           path: |
             screenshots/
             videos/
