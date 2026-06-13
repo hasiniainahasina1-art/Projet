@@ -1,4 +1,4 @@
-// goodloka-login-light.js – Login, clic sur le premier "Jouer" (domino), inspection + vidéo
+// goodloka-login-light.js – Login + clic sur "Jouer" + inspection + fermeture popup save password
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -20,6 +20,26 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
+// --- Fermeture de la popup "Save password" (Chrome) ---
+async function dismissSavePasswordPopup(page) {
+    try {
+        // Attendre que la popup Chrome apparaisse (max 5 secondes)
+        const popupSelector = 'button:has(span:text("Never")), button:has(span:text("No thanks"))';
+        await page.waitForSelector(popupSelector, { timeout: 5000 });
+        // Cliquer sur le premier bouton "Never" ou "No thanks"
+        const button = await page.$(popupSelector);
+        if (button) {
+            await button.click();
+            console.log('✅ Popup "Save password" fermée');
+            await delay(1000);
+        }
+    } catch (e) {
+        // La popup n'est pas apparue, on continue
+        console.log('ℹ️ Aucune popup "Save password" détectée');
+    }
+}
+
+// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -130,19 +150,21 @@ function stopFFmpeg(ffmpeg) {
         await delay(5000);
         console.log(`📍 URL actuelle : ${page.url()}`);
 
+        // 2. Fermer la popup "Save password" si elle apparaît
+        await dismissSavePasswordPopup(page);
+
         const cookies = await page.cookies();
         console.log(`🍪 Cookies récupérés : ${cookies.length}`);
 
-        // 2. Inspecter games/list
+        // 3. Inspecter games/list
         await inspectPage(page, 'games_list');
 
-        // 3. Cliquer sur le premier "Jouer" (domino)
+        // 4. Cliquer sur le premier "Jouer" (domino)
         console.log('🔍 Recherche du premier lien "Jouer"...');
         const clicked = await page.evaluate(() => {
             const links = [...document.querySelectorAll('a')];
             const jouerLink = links.find(a => a.textContent.trim() === 'Jouer');
             if (jouerLink) {
-                // Essayer d'abord de cliquer sur le lien lui-même
                 jouerLink.click();
                 return true;
             }
@@ -150,7 +172,6 @@ function stopFFmpeg(ffmpeg) {
         });
 
         if (!clicked) {
-            // Fallback : chercher le parent (la carte entière)
             console.log('⚠️ Clic direct sur le lien échoué, tentative sur le parent...');
             const parentClicked = await page.evaluate(() => {
                 const links = [...document.querySelectorAll('a')];
@@ -168,7 +189,7 @@ function stopFFmpeg(ffmpeg) {
         await delay(5000);
         console.log(`📍 URL après tentative de clic : ${page.url()}`);
 
-        // 4. Inspecter la page de jeu (si on y est)
+        // 5. Inspecter la page de jeu
         await inspectPage(page, 'domino_game');
 
         await stopFFmpeg(ffmpegProcess);
