@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (corrigé)
+// goodloka-create-and-wait.js – version avec extraction des dominos adverses
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const password = process.env.PASSWORD;
 const desiredScore = process.env.SCORE || '50';
 const desiredMise  = process.env.MISE || '200';
 const desiredJoueurs = process.env.JOUEURS || '2';
-const waitTimeout = 5 * 60 * 1000; // 5 minutes
+const waitTimeout = 5 * 60 * 1000;
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
@@ -79,7 +79,7 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Vérifier la présence d'un bouton de jeu (Jouer, Piocher, Passer) ---
+// --- Vérifier la présence d'un bouton de jeu ---
 async function hasGameButton(page) {
     return await page.evaluate(() => {
         const buttons = [...document.querySelectorAll('button')];
@@ -90,57 +90,33 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Inspection approfondie des dominos adverses (corrigée) ---
-async function inspectDominoes(page) {
-    console.log('🔍 Inspection approfondie du plateau...');
-    await delay(10000);
-    await page.screenshot({ path: path.join(screenshotsDir, 'game_board.png'), fullPage: true });
+// --- Extraction des dominos adverses ---
+async function inspectOpponentDominoes(page) {
+    console.log('🕵️ Analyse des dominos de l\'adversaire...');
+    await delay(5000);
+    await page.screenshot({ path: path.join(screenshotsDir, 'opponent_dominoes.png'), fullPage: true });
 
-    const dominoElements = await page.$$eval('*', els =>
-        els
-            .filter(el => {
-                try {
-                    // Méthode 1 : classes courantes
-                    const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
-                    if (/domino|tile|piece|bone|double|pip/.test(cls)) return true;
-
-                    // Méthode 2 : texte contenant un motif genre "4:2" ou "4-2"
-                    const text = (el.textContent || '').trim();
-                    if (/\d+\s*[:\-]\s*\d+/.test(text)) return true;
-
-                    // Méthode 3 : caractères Unicode domino (plage 1F030-1F09F)
-                    for (const ch of text) {
-                        const cp = ch.codePointAt(0);
-                        if (cp >= 0x1F030 && cp <= 0x1F09F) return true;
-                    }
-                } catch (e) {}
-                return false;
-            })
-            .map(el => ({
-                tag: el.tagName,
-                class: (typeof el.className === 'string' ? el.className : ''),
-                id: el.id,
-                text: (el.textContent || '').trim().substring(0, 30),
-                rect: el.getBoundingClientRect(),
-                html: el.outerHTML.substring(0, 200)
-            }))
+    const opponentDominoes = await page.$$eval('.opponent_dominoes .o_domino', els =>
+        els.map(el => {
+            // Récupérer les valeurs depuis les data-value des demis
+            const left = el.querySelector('.domino_left');
+            const right = el.querySelector('.domino_right');
+            const leftVal = left ? (left.dataset.value || left.getAttribute('data-value')) : null;
+            const rightVal = right ? (right.dataset.value || right.getAttribute('data-value')) : null;
+            return {
+                left: leftVal,
+                right: rightVal,
+                text: leftVal && rightVal ? `${leftVal}:${rightVal}` : 'inconnu',
+                visible: el.offsetParent !== null
+            };
+        })
     );
 
-    console.log(`🎲 ${dominoElements.length} éléments suspects trouvés :`);
-    dominoElements.forEach((d, i) => {
-        console.log(`   ${i+1}. <${d.tag}> class="${d.class}" text="${d.text}" pos=(${Math.round(d.rect.x)},${Math.round(d.rect.y)})`);
-        if (d.html) console.log(`      HTML: ${d.html}`);
+    console.log(`🎴 ${opponentDominoes.length} dominos adverses trouvés :`);
+    opponentDominoes.forEach((d, i) => {
+        console.log(`   ${i+1}. ${d.text} (visible: ${d.visible})`);
     });
-
-    if (dominoElements.length === 0) {
-        console.log('⚠️ Aucun domino trouvé. Affichage du conteneur de jeu pour diagnostic :');
-        const boardHTML = await page.evaluate(() => {
-            const board = document.querySelector('.game-board, .board, .domino-table, [class*="board"], [class*="table"]');
-            return board ? board.outerHTML.substring(0, 1000) : 'Aucun conteneur trouvé';
-        });
-        console.log(boardHTML);
-    }
-    return dominoElements;
+    return opponentDominoes;
 }
 
 (async () => {
@@ -264,26 +240,27 @@ async function inspectDominoes(page) {
         }
         await delay(3000);
 
-        // 6. Attendre un adversaire (max 5 minutes)
+        // 6. Attendre un adversaire
         console.log('⏳ Attente d\'un adversaire (max 5 min)...');
         const startWait = Date.now();
         let gameStarted = false;
         while (Date.now() - startWait < waitTimeout) {
-            const boardEl = await page.$('.game-board, .board, .domino-table, [class*="board"], [class*="table"]');
+            const boardEl = await page.$('.domino_board');
             const playBtnVisible = await hasGameButton(page);
             if (boardEl || playBtnVisible) {
                 console.log('🎮 Partie commencée !');
                 gameStarted = true;
                 break;
             }
-            const opponentEl = await page.$('.opponent, .player-avatar, [class*="opponent"]');
+            const opponentEl = await page.$('.opponent_dominoes');
             if (opponentEl) console.log('👥 Adversaire détecté, attente du démarrage...');
             console.log('⏳ Pas encore de partie...');
             await delay(10000);
         }
 
         if (gameStarted) {
-            await inspectDominoes(page);
+            // 🎯 Extraire les dominos adverses
+            await inspectOpponentDominoes(page);
         } else {
             console.log('⚠️ Aucun adversaire après 5 minutes.');
             await page.screenshot({ path: path.join(screenshotsDir, 'no_opponent.png'), fullPage: true });
