@@ -1,4 +1,4 @@
-// goodloka-inspect-all-games.js – Extraction individuelle de chaque partie
+// goodloka-inspect-all-games.js – Extraction complète de chaque partie
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -76,6 +76,7 @@ function stopFFmpeg(ffmpeg) {
     return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
 }
 
+// --- NOUVELLE EXTRACTION ROBUSTE ---
 async function extractAllGamesConditions(page) {
     return await page.evaluate(() => {
         const games = [];
@@ -83,16 +84,22 @@ async function extractAllGamesConditions(page) {
         const joinBtns = allButtons.filter(b => b.textContent.trim() === 'Rejoindre');
 
         joinBtns.forEach((btn, index) => {
-            let container = btn.parentElement;
+            // On part du bouton et on remonte tant que le conteneur contient exactement un seul "Rejoindre"
+            let container = btn;
             while (container) {
-                const joinCount = [...container.querySelectorAll('button')]
+                const parent = container.parentElement;
+                if (!parent) break;
+                const joinCount = [...parent.querySelectorAll('button')]
                     .filter(b => b.textContent.trim() === 'Rejoindre').length;
-                if (joinCount === 1) break;
-                container = container.parentElement;
+                if (joinCount === 1) {
+                    container = parent; // on monte
+                } else {
+                    // Si le parent contient plus d'un Rejoindre, on s'arrête et on garde le précédent
+                    break;
+                }
             }
-            if (!container) {
-                container = btn.parentElement;
-            }
+            // container est maintenant le plus haut parent contenant uniquement ce bouton
+            // On prend tout son texte
             const text = container.textContent.replace(/\s+/g, ' ').trim();
             games.push({ index: index + 1, text });
         });
@@ -115,55 +122,88 @@ async function extractAllGamesConditions(page) {
         ffmpegProcess = startFFmpeg(videoPath);
         await delay(1000);
 
-        // Login (inchangé) ...
+        // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         console.log(`🌐 Navigation vers ${loginUrl}`);
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
+
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await randomDelay(500, 1500);
-        console.log('⏎ Appui sur Entrée...');
-        await page.keyboard.press('Enter');
-        try { await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 }); } catch (e) {}
-        await delay(5000);
-        console.log(`📍 Connecté : ${page.url()}`);
 
-        // Aller sur la liste des jeux et cliquer sur "Jouer"
-        await page.goto('https://www.goodloka.com/games/list', { waitUntil: 'networkidle2', timeout: 60000 });
+        console.log('⏎ Appui sur Entrée pour valider la connexion...');
+        await page.keyboard.press('Enter');
+
+        console.log('⏳ Attente de la redirection...');
+        try {
+            await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 });
+        } catch (e) { console.warn('⚠️ Redirection non détectée'); }
         await delay(5000);
-        console.log('🔍 Clic sur le premier "Jouer"...');
-        const jouerHandle = await page.evaluateHandle(() => {
-            const links = [...document.querySelectorAll('a')];
-            return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
-        });
-        if (jouerHandle) {
-            const box = await jouerHandle.boundingBox();
-            if (box) await humanClickAt(page, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
-            else await jouerHandle.evaluate(el => el.click());
-            await jouerHandle.dispose();
-        } else {
-            console.log('⚠️ Aucun lien "Jouer" visible.');
+        console.log(`📍 URL après connexion : ${page.url()}`);
+
+        // 2. Aller sur la liste des jeux et cliquer sur le premier "Jouer"
+        const gamesListUrl = 'https://www.goodloka.com/games/list';
+        console.log(`🎮 Navigation vers ${gamesListUrl}`);
+        await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await delay(5000);
+
+        console.log('⏳ Attente du premier lien "Jouer"...');
+        let jouerClicked = false;
+        try {
+            await page.waitForSelector('a', { visible: true, timeout: 15000 });
+            const jouerHandle = await page.evaluateHandle(() => {
+                const links = [...document.querySelectorAll('a')];
+                return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
+            });
+            if (jouerHandle) {
+                const box = await jouerHandle.boundingBox();
+                if (box) {
+                    const coords = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+                    await humanClickAt(page, coords);
+                    jouerClicked = true;
+                } else {
+                    await jouerHandle.evaluate(el => el.click());
+                    jouerClicked = true;
+                }
+                await jouerHandle.dispose();
+            } else {
+                const clicked = await page.evaluate(() => {
+                    const links = [...document.querySelectorAll('a')];
+                    const jouer = links.find(a => a.textContent.trim() === 'Jouer');
+                    if (jouer) { jouer.click(); return true; }
+                    return false;
+                });
+                jouerClicked = clicked;
+            }
+        } catch (err) {
+            console.warn('⚠️ Erreur lors du clic sur "Jouer" :', err.message);
+        }
+        if (!jouerClicked) {
+            console.log('⚠️ Impossible de cliquer sur "Jouer". On continue quand même avec l\'URL actuelle.');
         }
         await delay(5000);
-        console.log(`📍 Page domino : ${page.url()}`);
+        console.log(`📍 URL après tentative de clic : ${page.url()}`);
 
-        // Capture et extraction
+        // 3. Capturer la page complète
         await page.screenshot({ path: path.join(screenshotsDir, 'domino_all_games.png'), fullPage: true });
+
+        // 4. Extraire les conditions de chaque partie disponible
         const games = await extractAllGamesConditions(page);
         if (games.length === 0) {
-            console.log('⚠️ Aucune partie trouvée.');
+            console.log('⚠️ Aucune partie disponible (aucun bouton "Rejoindre" trouvé).');
         } else {
-            console.log(`📋 ${games.length} partie(s) :`);
-            games.forEach(g => {
-                console.log(`\n--- Partie #${g.index} ---`);
-                console.log(g.text);
+            console.log(`📋 ${games.length} partie(s) trouvée(s) :`);
+            games.forEach((game, i) => {
+                console.log(`\n--- Partie #${i + 1} ---`);
+                console.log(game.text);
             });
         }
 
         await stopFFmpeg(ffmpegProcess);
         await browser.close();
-        console.log('🎉 Terminé.');
+
+        console.log('🎉 Inspection terminée avec succès.');
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
