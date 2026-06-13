@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos
+// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -23,6 +23,7 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
+// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -68,6 +69,7 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
+// --- Trouver un bouton par son texte exact ---
 async function findButtonByText(page, text) {
     const btns = await page.$$('button');
     for (const btn of btns) {
@@ -77,6 +79,18 @@ async function findButtonByText(page, text) {
     return null;
 }
 
+// --- Vérifier la présence d'un bouton de jeu (Jouer, Piocher, Passer) ---
+async function hasGameButton(page) {
+    return await page.evaluate(() => {
+        const buttons = [...document.querySelectorAll('button')];
+        return buttons.some(b => {
+            const t = b.textContent.trim().toLowerCase();
+            return t.includes('jouer') || t.includes('piocher') || t.includes('passer');
+        });
+    });
+}
+
+// --- Inspection des dominos adverses ---
 async function inspectDominoes(page) {
     console.log('🔍 Inspection des dominos adverses...');
     await delay(3000);
@@ -166,6 +180,7 @@ async function inspectDominoes(page) {
         await delay(3000);
 
         // 4. Sélectionner les options
+
         // Mode Classique
         const modeBtns = await page.$$('button.mode-pill');
         if (modeBtns.length >= 1) {
@@ -230,14 +245,14 @@ async function inspectDominoes(page) {
         }
         await delay(3000);
 
-        // 6. Attendre un adversaire
+        // 6. Attendre un adversaire (max 5 minutes)
         console.log('⏳ Attente d\'un adversaire (max 5 min)...');
         const startWait = Date.now();
         let gameStarted = false;
         while (Date.now() - startWait < waitTimeout) {
             const boardEl = await page.$('.game-board, .board, .domino-table, [class*="board"], [class*="table"]');
-            const playBtn = await page.$('button:has-text("Jouer"), button:has-text("Piocher"), button:has-text("Passer")');
-            if (boardEl || playBtn) {
+            const playBtnVisible = await hasGameButton(page);
+            if (boardEl || playBtnVisible) {
                 console.log('🎮 Partie commencée !');
                 gameStarted = true;
                 break;
