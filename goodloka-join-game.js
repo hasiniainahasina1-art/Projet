@@ -1,4 +1,4 @@
-// goodloka-join-game.js – Recherche et rejoint une partie selon critères
+// goodloka-join-game.js – Rejoint une partie selon critères (ou la première disponible)
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -28,7 +28,6 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
-// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -85,7 +84,7 @@ function stopFFmpeg(ffmpeg) {
     return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
 }
 
-// --- Extraction structurée des parties ---
+// Extraction des parties avec leur index de bouton
 async function extractGamesWithButtons(page) {
     return await page.evaluate(() => {
         const games = [];
@@ -93,7 +92,6 @@ async function extractGamesWithButtons(page) {
         const joinBtns = allButtons.filter(b => b.textContent.trim() === 'Rejoindre');
 
         joinBtns.forEach((btn, index) => {
-            // Remonter au conteneur de la carte (le plus haut qui ne contient qu'un seul Rejoindre)
             let container = btn;
             while (container) {
                 const parent = container.parentElement;
@@ -107,51 +105,26 @@ async function extractGamesWithButtons(page) {
                 }
             }
             const text = container.textContent.replace(/\s+/g, ' ').trim();
-            games.push({
-                index,
-                text,
-                btnXPath: null // on utilisera l'index pour retrouver le bouton plus tard
-            });
+            games.push({ index, text });
         });
         return games;
     });
 }
 
-// --- Parsing d'une carte de partie ---
 function parseGameText(text) {
-    // Exemple : "🁣 Classique 50 Lazare🇲🇬 200 MGA < 6 📅 Rejoindre Solde insuffisant ..."
-    const info = {
-        score: null,
-        mise: null,
-        condition: null,
-        creator: null
-    };
-
-    // Extraire le score (nombre après "Classique")
+    const info = { score: null, mise: null, condition: null, creator: null };
     const scoreMatch = text.match(/Classique\s+(\d+)/);
     if (scoreMatch) info.score = parseInt(scoreMatch[1]);
-
-    // Extraire la mise (nombre avant "MGA")
     const miseMatch = text.match(/(\d[\d\s]*)\s*MGA/);
-    if (miseMatch) {
-        // Enlever les espaces dans le nombre
-        info.mise = parseInt(miseMatch[1].replace(/\s/g, ''));
-    }
-
-    // Extraire la condition (< 6, > 10, etc.)
+    if (miseMatch) info.mise = parseInt(miseMatch[1].replace(/\s/g, ''));
     const condMatch = text.match(/[<>]\s*\d+/);
     if (condMatch) info.condition = condMatch[0].replace(/\s/g, '');
-
-    // Extraire le créateur (texte après le score et avant la mise)
-    // Approximatif : entre le score et le premier nombre suivi de MGA
     const afterScore = text.replace(/.*?Classique\s+\d+\s*/, '');
     const beforeMise = afterScore.split(/\d[\d\s]*MGA/)[0];
     info.creator = beforeMise.trim();
-
     return info;
 }
 
-// --- Vérifie si une partie correspond aux critères ---
 function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
     if (searchScore !== null && gameInfo.score !== searchScore) return false;
     if (searchMise !== null && gameInfo.mise !== searchMise) return false;
@@ -194,9 +167,8 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         await delay(5000);
         console.log(`📍 URL après connexion : ${page.url()}`);
 
-        // 2. Aller sur la liste des jeux et cliquer sur le premier "Jouer" (domino)
+        // 2. Aller sur la liste des jeux et cliquer sur "Jouer"
         const gamesListUrl = 'https://www.goodloka.com/games/list';
-        console.log(`🎮 Navigation vers ${gamesListUrl}`);
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
@@ -216,7 +188,18 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         await delay(5000);
         console.log(`📍 Page domino : ${page.url()}`);
 
-        // 3. Boucle de recherche (max 5 minutes)
+        // 3. Attendre qu'au moins un bouton "Rejoindre" soit visible (max 30s)
+        console.log('⏳ Attente de l\'apparition de boutons "Rejoindre"...');
+        try {
+            await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 30000 });
+            console.log('✅ Boutons "Rejoindre" détectés');
+        } catch (e) {
+            console.warn('⚠️ Aucun bouton "Rejoindre" après 30s, rafraîchissement...');
+            await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+            await delay(5000);
+        }
+
+        // 4. Boucle de recherche (max 5 minutes)
         const MAX_WAIT_MS = 5 * 60 * 1000;
         const RELOAD_INTERVAL = 30000;
         const startWait = Date.now();
@@ -226,13 +209,13 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         console.log('⏳ Recherche d\'une partie correspondante (max 5 min)...');
         while (Date.now() - startWait < MAX_WAIT_MS) {
             const games = await extractGamesWithButtons(page);
+            console.log(`🔎 ${games.length} partie(s) actuellement visibles`);
             if (games.length > 0) {
                 for (const game of games) {
                     const info = parseGameText(game.text);
-                    console.log(`🔎 Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition}, créateur="${info.creator}"`);
+                    console.log(`   Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition}, créateur="${info.creator}"`);
                     if (matchesCriteria(info, searchScore, searchMise, searchCondition)) {
-                        console.log(`✅ Partie trouvée ! (Index ${game.index})`);
-                        // Cliquer sur le bouton Rejoindre correspondant
+                        console.log(`✅ Partie correspondante trouvée ! (Index ${game.index})`);
                         const btns = await page.$$('button');
                         const joinBtns = [];
                         for (const btn of btns) {
@@ -257,8 +240,11 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
                 await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
                 lastReload = Date.now();
                 await delay(5000);
+                // Réattendre que les boutons apparaissent
+                try {
+                    await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 15000 });
+                } catch (e) {}
             } else {
-                console.log('⏳ Aucune correspondance, attente 10s...');
                 await delay(10000);
             }
         }
