@@ -1,4 +1,4 @@
-// goodloka-join-game.js – Rejoint une partie selon critères (ou la première disponible)
+// goodloka-join-game.js – Rejoint une partie selon critères (score, mise, condition)
 const { connect } = require('puppeteer-real-browser');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -28,6 +28,7 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
+// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -84,7 +85,7 @@ function stopFFmpeg(ffmpeg) {
     return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
 }
 
-// Extraction des parties avec leur index de bouton
+// --- Extraction des parties ---
 async function extractGamesWithButtons(page) {
     return await page.evaluate(() => {
         const games = [];
@@ -111,6 +112,7 @@ async function extractGamesWithButtons(page) {
     });
 }
 
+// --- Parsing d'une carte de partie (score, mise, condition) ---
 function parseGameText(text) {
     const info = { score: null, mise: null, condition: null, creator: null };
     const scoreMatch = text.match(/Classique\s+(\d+)/);
@@ -121,7 +123,7 @@ function parseGameText(text) {
     if (condMatch) info.condition = condMatch[0].replace(/\s/g, '');
     const afterScore = text.replace(/.*?Classique\s+\d+\s*/, '');
     const beforeMise = afterScore.split(/\d[\d\s]*MGA/)[0];
-    info.creator = beforeMise.trim();
+    info.creator = beforeMise.trim().split(',')[0].trim();
     return info;
 }
 
@@ -161,9 +163,7 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         await page.keyboard.press('Enter');
 
         console.log('⏳ Attente de la redirection...');
-        try {
-            await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 });
-        } catch (e) { console.warn('⚠️ Redirection non détectée'); }
+        try { await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 }); } catch (e) {}
         await delay(5000);
         console.log(`📍 URL après connexion : ${page.url()}`);
 
@@ -182,19 +182,12 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
             if (box) await humanClickAt(page, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
             else await jouerHandle.evaluate(el => el.click());
             await jouerHandle.dispose();
-        } else {
-            console.log('⚠️ Aucun lien "Jouer" visible.');
         }
         await delay(5000);
         console.log(`📍 Page domino : ${page.url()}`);
 
-        // 3. Attendre qu'au moins un bouton "Rejoindre" soit visible (max 30s)
-        console.log('⏳ Attente de l\'apparition de boutons "Rejoindre"...');
-        try {
-            await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 30000 });
-            console.log('✅ Boutons "Rejoindre" détectés');
-        } catch (e) {
-            console.warn('⚠️ Aucun bouton "Rejoindre" après 30s, rafraîchissement...');
+        // 3. Attendre les boutons Rejoindre
+        try { await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 30000 }); } catch (e) {
             await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
             await delay(5000);
         }
@@ -206,44 +199,37 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         let lastReload = 0;
         let found = false;
 
-        console.log('⏳ Recherche d\'une partie correspondante (max 5 min)...');
+        console.log('⏳ Recherche d\'une partie correspondante...');
         while (Date.now() - startWait < MAX_WAIT_MS) {
             const games = await extractGamesWithButtons(page);
-            console.log(`🔎 ${games.length} partie(s) actuellement visibles`);
-            if (games.length > 0) {
-                for (const game of games) {
-                    const info = parseGameText(game.text);
-                    console.log(`   Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition}, créateur="${info.creator}"`);
-                    if (matchesCriteria(info, searchScore, searchMise, searchCondition)) {
-                        console.log(`✅ Partie correspondante trouvée ! (Index ${game.index})`);
-                        const btns = await page.$$('button');
-                        const joinBtns = [];
-                        for (const btn of btns) {
-                            const text = await page.evaluate(el => el.textContent.trim(), btn);
-                            if (text === 'Rejoindre') joinBtns.push(btn);
-                        }
-                        if (game.index < joinBtns.length) {
-                            const targetBtn = joinBtns[game.index];
-                            await targetBtn.click();
-                            console.log('🖱️ Clic sur le bouton Rejoindre');
-                            found = true;
-                            break;
-                        }
+            console.log(`🔎 ${games.length} partie(s) visible(s)`);
+            for (const game of games) {
+                const info = parseGameText(game.text);
+                console.log(`   Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition ?? 'aucune'}, créateur="${info.creator}"`);
+                if (matchesCriteria(info, searchScore, searchMise, searchCondition)) {
+                    console.log(`✅ Partie correspondante trouvée !`);
+                    const btns = await page.$$('button');
+                    const joinBtns = [];
+                    for (const btn of btns) {
+                        const txt = await page.evaluate(el => el.textContent.trim(), btn);
+                        if (txt === 'Rejoindre') joinBtns.push(btn);
+                    }
+                    if (game.index < joinBtns.length) {
+                        await joinBtns[game.index].click();
+                        console.log('🖱️ Clic sur Rejoindre');
+                        found = true;
+                        break;
                     }
                 }
-                if (found) break;
             }
+            if (found) break;
 
-            // Rafraîchir périodiquement
             if (Date.now() - lastReload >= RELOAD_INTERVAL) {
-                console.log('🔄 Rafraîchissement de la page...');
+                console.log('🔄 Rafraîchissement...');
                 await page.reload({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
                 lastReload = Date.now();
                 await delay(5000);
-                // Réattendre que les boutons apparaissent
-                try {
-                    await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 15000 });
-                } catch (e) {}
+                try { await page.waitForSelector('button:has-text("Rejoindre")', { visible: true, timeout: 15000 }); } catch (e) {}
             } else {
                 await delay(10000);
             }
@@ -251,16 +237,16 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
 
         if (found) {
             await delay(3000);
+            console.log(`📍 URL après clic : ${page.url()}`);
             await page.screenshot({ path: path.join(screenshotsDir, 'joined_game.png'), fullPage: true });
-            console.log('🎉 Partie rejointe avec succès !');
+            console.log('🎉 Partie rejointe !');
         } else {
             await page.screenshot({ path: path.join(screenshotsDir, 'no_match.png'), fullPage: true });
-            console.log('⚠️ Aucune partie correspondante trouvée après 5 minutes.');
+            console.log('⚠️ Aucune partie trouvée après 5 minutes.');
         }
 
         await stopFFmpeg(ffmpegProcess);
         await browser.close();
-        console.log('🏁 Script terminé.');
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
