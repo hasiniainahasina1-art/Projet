@@ -1,4 +1,4 @@
-name: GoodLoka Login Light
+name: Inspect Join Conditions
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
         required: true
 
 jobs:
-  login:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,7 +21,7 @@ jobs:
           node-version: '20'
       - run: npm install puppeteer-real-browser
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
-      - name: Exécuter l'inspection
+      - name: Exécuter
         env:
           PHONE: ${{ github.event.inputs.phone }}
           PASSWORD: ${{ github.event.inputs.password }}
@@ -29,10 +29,10 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-login-light.js
+          node goodloka-inspect-join.js
       - uses: actions/upload-artifact@v4
         with:
-          name: domino-artifacts
+          name: join-conditions
           path: |
             screenshots/
             videos/
