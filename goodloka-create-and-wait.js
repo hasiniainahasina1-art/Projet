@@ -1,21 +1,21 @@
-// goodloka-create-and-wait.js – Créer une partie classique, attendre un adversaire, inspecter ses dominos
+// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
 
 const phone    = process.env.PHONE;
 const password = process.env.PASSWORD;
-const desiredScore = process.env.SCORE || '50';      // score choisi
-const desiredMise  = process.env.MISE || '200';      // mise choisie
-const desiredJoueurs = process.env.JOUEURS || '2';   // "2" ou "3"
-const waitTimeout = 5 * 60 * 1000;                  // 5 minutes max
+const desiredScore = process.env.SCORE || '50';
+const desiredMise  = process.env.MISE || '200';
+const desiredJoueurs = process.env.JOUEURS || '2';
+const waitTimeout = 5 * 60 * 1000; // 5 minutes
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
     process.exit(1);
 }
 
-console.log(`🎮 Configuration de la partie : Classique, score=${desiredScore}, mise=${desiredMise}, joueurs=${desiredJoueurs}`);
+console.log(`🎮 Configuration : Classique, score=${desiredScore}, mise=${desiredMise}, joueurs=${desiredJoueurs}`);
 
 const screenshotsDir = path.join(__dirname, 'screenshots');
 if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
@@ -23,7 +23,6 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
-// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -69,7 +68,6 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-// --- Recherche d'un bouton par son texte exact ---
 async function findButtonByText(page, text) {
     const btns = await page.$$('button');
     for (const btn of btns) {
@@ -79,21 +77,6 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Attendre qu'un élément contenant un texte spécifique apparaisse ---
-async function waitForElementWithText(page, text, timeout = 30000) {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-        const elements = await page.$$('*');
-        for (const el of elements) {
-            const txt = await page.evaluate(e => e.textContent.trim(), el);
-            if (txt === text && el.offsetParent !== null) return el;
-        }
-        await delay(2000);
-    }
-    return null;
-}
-
-// --- Inspection des dominos (après début de partie) ---
 async function inspectDominoes(page) {
     console.log('🔍 Inspection des dominos adverses...');
     await delay(3000);
@@ -103,7 +86,13 @@ async function inspectDominoes(page) {
         els
             .filter(el => {
                 const text = el.textContent.trim();
-                return /[\🁣\🁢\🁤\🁥\🁦\🁧\🁨\🁩\🁪\🁫\🁬\🁭\🁮\🁯\🁰\🁱\🁲\🁳\🁴\🁵\🁶\🁷\🁸\🁹\🁺\🁻\🁼\🁽\🁾\🁿]/u.test(text) || /\d+:\d+/.test(text);
+                // Détecter les dominos Unicode (plage 1F030-1F09F)
+                for (const ch of text) {
+                    const cp = ch.codePointAt(0);
+                    if (cp >= 0x1F030 && cp <= 0x1F09F) return true;
+                }
+                // Détecter les motifs "4:2"
+                return /\d+:\d+/.test(text);
             })
             .map(el => ({
                 tag: el.tagName,
@@ -150,7 +139,7 @@ async function inspectDominoes(page) {
         await delay(5000);
         console.log(`📍 URL après connexion : ${page.url()}`);
 
-        // 2. Aller sur la liste des jeux et cliquer sur "Jouer" (Domino)
+        // 2. Aller sur la liste des jeux et cliquer sur "Jouer"
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
@@ -177,29 +166,20 @@ async function inspectDominoes(page) {
         await delay(3000);
 
         // 4. Sélectionner les options
-
-        // Mode Classique (le premier bouton avec "Classique")
+        // Mode Classique
         const modeBtns = await page.$$('button.mode-pill');
         if (modeBtns.length >= 1) {
-            // S'assurer que le premier (classique) est actif
-            const modeClassique = modeBtns[0];
-            const modeText = await page.evaluate(el => el.textContent.trim(), modeClassique);
-            if (!modeText.includes('Classique')) {
-                // Sinon chercher celui avec "Classique"
-                for (const b of modeBtns) {
-                    const txt = await page.evaluate(el => el.textContent.trim(), b);
-                    if (txt.includes('Classique')) {
-                        await b.click();
-                        break;
-                    }
+            let classiqueBtn = null;
+            for (const b of modeBtns) {
+                const txt = await page.evaluate(el => el.textContent.trim(), b);
+                if (txt.includes('Classique')) {
+                    classiqueBtn = b;
+                    break;
                 }
-            } else {
-                // Déjà classique, on clique pour être sûr
-                await modeClassique.click();
             }
+            if (classiqueBtn) await classiqueBtn.click();
+            else await modeBtns[0].click();
             console.log('✅ Mode Classique sélectionné');
-        } else {
-            console.warn('⚠️ Boutons de mode non trouvés');
         }
         await delay(1000);
 
@@ -208,18 +188,14 @@ async function inspectDominoes(page) {
         if (scoreBtn) {
             await scoreBtn.click();
             console.log(`✅ Score ${desiredScore} sélectionné`);
-        } else {
-            console.warn(`⚠️ Bouton score ${desiredScore} introuvable`);
         }
         await delay(500);
 
-        // Mise (le bouton avec le texte exact)
+        // Mise
         const miseBtn = await findButtonByText(page, desiredMise);
         if (miseBtn) {
             await miseBtn.click();
             console.log(`✅ Mise ${desiredMise} sélectionnée`);
-        } else {
-            console.warn(`⚠️ Bouton mise ${desiredMise} introuvable`);
         }
         await delay(500);
 
@@ -228,46 +204,37 @@ async function inspectDominoes(page) {
         if (joueursBtn) {
             await joueursBtn.click();
             console.log(`✅ ${desiredJoueurs} joueurs sélectionné`);
-        } else {
-            console.warn(`⚠️ Bouton "${desiredJoueurs} joueurs" introuvable`);
         }
         await delay(500);
 
-        // Décocher toute condition : on parcourt les boutons ayant "condition" dans leur classe ou texte
-        // On cherche des éléments comme <button class="cond-pill cond-pill--active"> ou similaires.
-        // Pour l'instant, on va cliquer sur chaque bouton qui semble être une condition active (ex: si contient "<" ou "📅")
-        // Si aucun bouton condition trouvé, on ignore.
+        // Désactiver les conditions
         const allButtons = await page.$$('button');
         for (const btn of allButtons) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
             const cls = await page.evaluate(el => el.className, btn);
-            if (txt.match(/[<>]\s*\d/) || txt.includes('📅')) {
-                // Si le bouton semble actif (class active), on clique pour désactiver
-                if (cls.includes('active') || cls.includes('selected')) {
-                    await btn.click();
-                    console.log(`🔓 Condition "${txt}" désactivée`);
-                    await delay(300);
-                }
+            if ((txt.match(/[<>]\s*\d/) || txt.includes('📅')) && (cls.includes('active') || cls.includes('selected'))) {
+                await btn.click();
+                console.log(`🔓 Condition "${txt}" désactivée`);
+                await delay(300);
             }
         }
         console.log('✅ Conditions désactivées');
 
-        // 5. Cliquer sur "Créer la partie" (le bouton final)
+        // 5. Créer la partie
         const createFinalBtn = await findButtonByText(page, 'Créer la partie');
         if (createFinalBtn) {
             await createFinalBtn.click();
             console.log('🖱️ Partie créée');
         } else {
-            throw new Error('Bouton "Créer la partie" introuvable dans la modale');
+            throw new Error('Bouton "Créer la partie" introuvable');
         }
         await delay(3000);
 
-        // 6. Attendre qu'un adversaire rejoigne (max 5 minutes)
+        // 6. Attendre un adversaire
         console.log('⏳ Attente d\'un adversaire (max 5 min)...');
         const startWait = Date.now();
         let gameStarted = false;
         while (Date.now() - startWait < waitTimeout) {
-            // Signes de début de partie : présence d'éléments de jeu (plateau, boutons "Jouer", etc.)
             const boardEl = await page.$('.game-board, .board, .domino-table, [class*="board"], [class*="table"]');
             const playBtn = await page.$('button:has-text("Jouer"), button:has-text("Piocher"), button:has-text("Passer")');
             if (boardEl || playBtn) {
@@ -275,23 +242,16 @@ async function inspectDominoes(page) {
                 gameStarted = true;
                 break;
             }
-
-            // Vérifier aussi la présence d'un élément indiquant l'adversaire (avatar, nom)
             const opponentEl = await page.$('.opponent, .player-avatar, [class*="opponent"]');
-            if (opponentEl) {
-                console.log('👥 Adversaire détecté, en attente du début de partie...');
-                // On continue d'attendre que le jeu démarre
-            }
-
+            if (opponentEl) console.log('👥 Adversaire détecté, attente du démarrage...');
             console.log('⏳ Pas encore de partie...');
             await delay(10000);
         }
 
         if (gameStarted) {
-            // 7. Inspecter les dominos adverses
             await inspectDominoes(page);
         } else {
-            console.log('⚠️ Aucun adversaire n\'a rejoint après 5 minutes.');
+            console.log('⚠️ Aucun adversaire après 5 minutes.');
             await page.screenshot({ path: path.join(screenshotsDir, 'no_opponent.png'), fullPage: true });
         }
 
