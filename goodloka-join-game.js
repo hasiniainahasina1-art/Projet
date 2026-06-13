@@ -1,6 +1,6 @@
-// goodloka-join-game.js – Rejoint une partie selon critères (score, mise, condition)
+// goodloka-join-game.js – Rejoint une partie selon critères (sans vidéo)
 const { connect } = require('puppeteer-real-browser');
-const { spawn } = require('child_process');
+const { Octokit } = require('@octokit/rest');
 const path = require('path');
 const fs = require('fs');
 
@@ -21,9 +21,7 @@ console.log(`   Mise      : ${searchMise ?? 'peu importe'}`);
 console.log(`   Condition : ${searchCondition || 'peu importe'}`);
 
 const screenshotsDir = path.join(__dirname, 'screenshots');
-const videosDir = path.join(__dirname, 'videos');
 if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
-if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
@@ -74,17 +72,6 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-function startFFmpeg(videoPath) {
-    const display = process.env.DISPLAY || ':99';
-    const args = ['-f','x11grab','-video_size','1280x720','-i',display,'-c:v','libx264','-preset','ultrafast','-crf','0','-pix_fmt','yuv420p','-y',videoPath];
-    const ffmpeg = spawn('ffmpeg', args, { stdio: 'inherit' });
-    console.log(`🎥 FFmpeg démarré sur ${display} → ${videoPath}`);
-    return ffmpeg;
-}
-function stopFFmpeg(ffmpeg) {
-    return new Promise((resolve) => { ffmpeg.on('close', resolve); ffmpeg.kill('SIGINT'); });
-}
-
 // --- Extraction des parties ---
 async function extractGamesWithButtons(page) {
     return await page.evaluate(() => {
@@ -112,7 +99,7 @@ async function extractGamesWithButtons(page) {
     });
 }
 
-// --- Parsing d'une carte de partie (score, mise, condition) ---
+// --- Parsing d'une carte de partie ---
 function parseGameText(text) {
     const info = { score: null, mise: null, condition: null, creator: null };
     const scoreMatch = text.match(/Classique\s+(\d+)/);
@@ -127,16 +114,15 @@ function parseGameText(text) {
     return info;
 }
 
-function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
-    if (searchScore !== null && gameInfo.score !== searchScore) return false;
-    if (searchMise !== null && gameInfo.mise !== searchMise) return false;
-    if (searchCondition && gameInfo.condition !== searchCondition) return false;
+function matchesCriteria(gameInfo, sScore, sMise, sCond) {
+    if (sScore !== null && gameInfo.score !== sScore) return false;
+    if (sMise !== null && gameInfo.mise !== sMise) return false;
+    if (sCond && gameInfo.condition !== sCond) return false;
     return true;
 }
 
 (async () => {
-    const videoPath = path.join(videosDir, `goodloka_join_${phone.replace(/[^a-zA-Z0-9]/g, '_')}.mp4`);
-    let ffmpegProcess, browser;
+    let browser;
     try {
         const { browser: br, page } = await connect({
             headless: false,
@@ -145,9 +131,6 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         });
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
-
-        ffmpegProcess = startFFmpeg(videoPath);
-        await delay(1000);
 
         // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
@@ -197,32 +180,38 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
         const RELOAD_INTERVAL = 30000;
         const startWait = Date.now();
         let lastReload = 0;
-        let found = false;
+        let foundIndex = -1;
 
-        console.log('⏳ Recherche d\'une partie correspondante...');
+        console.log('⏳ Recherche de la partie idéale...');
         while (Date.now() - startWait < MAX_WAIT_MS) {
             const games = await extractGamesWithButtons(page);
             console.log(`🔎 ${games.length} partie(s) visible(s)`);
+
+            let bestMatch = null;
             for (const game of games) {
                 const info = parseGameText(game.text);
                 console.log(`   Partie #${game.index+1} : score=${info.score}, mise=${info.mise}, condition=${info.condition ?? 'aucune'}, créateur="${info.creator}"`);
                 if (matchesCriteria(info, searchScore, searchMise, searchCondition)) {
-                    console.log(`✅ Partie correspondante trouvée !`);
-                    const btns = await page.$$('button');
-                    const joinBtns = [];
-                    for (const btn of btns) {
-                        const txt = await page.evaluate(el => el.textContent.trim(), btn);
-                        if (txt === 'Rejoindre') joinBtns.push(btn);
-                    }
-                    if (game.index < joinBtns.length) {
-                        await joinBtns[game.index].click();
-                        console.log('🖱️ Clic sur Rejoindre');
-                        found = true;
-                        break;
-                    }
+                    bestMatch = game;
+                    break;
                 }
             }
-            if (found) break;
+
+            if (bestMatch) {
+                console.log(`✅ Partie correspondante trouvée (Index ${bestMatch.index})`);
+                const btns = await page.$$('button');
+                const joinBtns = [];
+                for (const btn of btns) {
+                    const txt = await page.evaluate(el => el.textContent.trim(), btn);
+                    if (txt === 'Rejoindre') joinBtns.push(btn);
+                }
+                if (bestMatch.index < joinBtns.length) {
+                    await joinBtns[bestMatch.index].click();
+                    console.log('🖱️ Clic sur Rejoindre');
+                    foundIndex = bestMatch.index;
+                    break;
+                }
+            }
 
             if (Date.now() - lastReload >= RELOAD_INTERVAL) {
                 console.log('🔄 Rafraîchissement...');
@@ -235,7 +224,7 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
             }
         }
 
-        if (found) {
+        if (foundIndex >= 0) {
             await delay(3000);
             console.log(`📍 URL après clic : ${page.url()}`);
             await page.screenshot({ path: path.join(screenshotsDir, 'joined_game.png'), fullPage: true });
@@ -245,12 +234,10 @@ function matchesCriteria(gameInfo, searchScore, searchMise, searchCondition) {
             console.log('⚠️ Aucune partie trouvée après 5 minutes.');
         }
 
-        await stopFFmpeg(ffmpegProcess);
         await browser.close();
         process.exit(0);
     } catch (err) {
         console.error('❌ Erreur fatale :', err.message);
-        if (ffmpegProcess) await stopFFmpeg(ffmpegProcess);
         if (browser) await browser.close();
         process.exit(1);
     }
