@@ -1,4 +1,4 @@
-name: Inspect All Games
+name: GoodLoka Join Game
 
 on:
   workflow_dispatch:
@@ -9,9 +9,18 @@ on:
       password:
         description: 'Mot de passe'
         required: true
+      score:
+        description: 'Score (ex: 50) – laisser vide pour ignorer'
+        required: false
+      mise:
+        description: 'Mise en MGA (ex: 500) – laisser vide pour ignorer'
+        required: false
+      condition:
+        description: 'Condition (ex: < 6) – laisser vide pour ignorer'
+        required: false
 
 jobs:
-  inspect:
+  join:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,18 +30,21 @@ jobs:
           node-version: '20'
       - run: npm install puppeteer-real-browser
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
-      - name: Exécuter
+      - name: Exécuter la recherche
         env:
           PHONE: ${{ github.event.inputs.phone }}
           PASSWORD: ${{ github.event.inputs.password }}
+          SCORE: ${{ github.event.inputs.score }}
+          MISE: ${{ github.event.inputs.mise }}
+          CONDITION: ${{ github.event.inputs.condition }}
           DISPLAY: ':99'
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-inspect-all-games.js
+          node goodloka-join-game.js
       - uses: actions/upload-artifact@v4
         with:
-          name: all-games-info
+          name: join-game-artifacts
           path: |
             screenshots/
             videos/
