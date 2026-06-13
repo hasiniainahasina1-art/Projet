@@ -1,4 +1,4 @@
-// goodloka-create-game.js – Créer une partie et inspecter les options
+// goodloka-create-game.js – Créer une partie et inspecter les options (corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -17,7 +17,6 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const randomDelay = (min, max) => delay(Math.floor(Math.random() * (max - min + 1) + min));
 
-// --- Fonctions d'interaction humaine ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -63,7 +62,6 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-// --- Inspection détaillée de la page (modale) ---
 async function inspectPage(page, label) {
     console.log(`\n🔍 Inspection : ${label}`);
     await delay(2000);
@@ -71,17 +69,14 @@ async function inspectPage(page, label) {
     await page.screenshot({ path: path.join(screenshotsDir, filename), fullPage: true });
     console.log(`📸 Capture : ${filename}`);
 
-    // Textes visibles courts
     const texts = await page.$$eval('*', els =>
-        els
-            .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
+        els.filter(el => el.offsetParent !== null && el.textContent.trim().length > 0 && el.children.length === 0)
             .map(el => el.textContent.trim().substring(0, 80))
             .slice(0, 30)
     );
     console.log('📝 Textes visibles :');
     texts.forEach((t, i) => console.log(`  ${i+1}. "${t}"`));
 
-    // Champs input
     const inputs = await page.$$eval('input', els =>
         els.map(el => ({
             type: el.type || 'text',
@@ -93,7 +88,6 @@ async function inspectPage(page, label) {
     console.log('📝 Champs input :');
     inputs.forEach((inp, i) => console.log(`  ${i+1}. type="${inp.type}" placeholder="${inp.placeholder}" value="${inp.value}" visible=${inp.visible}`));
 
-    // Boutons
     const buttons = await page.$$eval('button', els =>
         els.map(el => ({
             text: el.textContent.trim().substring(0, 40),
@@ -104,7 +98,6 @@ async function inspectPage(page, label) {
     console.log('🔘 Boutons :');
     buttons.forEach((b, i) => console.log(`  ${i+1}. "${b.text}" class="${b.className}" visible=${b.visible}`));
 
-    // Sélecteurs (dropdown)
     const selects = await page.$$eval('select', els =>
         els.map(el => ({
             options: [...el.options].map(o => o.textContent.trim()),
@@ -112,11 +105,7 @@ async function inspectPage(page, label) {
         }))
     );
     console.log('📋 Sélecteurs :');
-    selects.forEach((s, i) => {
-        console.log(`  ${i+1}. options: [${s.options.join(' | ')}] visible=${s.visible}`);
-    });
-
-    return { texts, inputs, buttons, selects };
+    selects.forEach((s, i) => console.log(`  ${i+1}. options: [${s.options.join(' | ')}] visible=${s.visible}`));
 }
 
 (async () => {
@@ -170,9 +159,17 @@ async function inspectPage(page, label) {
         // 3. Inspecter la page avant création
         await inspectPage(page, 'before_create');
 
-        // 4. Cliquer sur "Créer une partie"
+        // 4. Cliquer sur "Créer une partie" (sélection sécurisée)
         console.log('🖱️ Recherche du bouton "Créer une partie"...');
-        const createBtn = await page.$('button:has-text("Créer une partie")');
+        const allBtns = await page.$$('button');
+        let createBtn = null;
+        for (const btn of allBtns) {
+            const text = await page.evaluate(el => el.textContent.trim(), btn);
+            if (text === 'Créer une partie') {
+                createBtn = btn;
+                break;
+            }
+        }
         if (createBtn) {
             await createBtn.click();
             console.log('✅ Clic sur "Créer une partie"');
@@ -182,7 +179,7 @@ async function inspectPage(page, label) {
         await delay(3000);
 
         // 5. Inspecter la modale de création
-        const modalInfo = await inspectPage(page, 'creation_modal');
+        await inspectPage(page, 'creation_modal');
 
         // 6. Garder la page ouverte 1 minute pour observation
         console.log('⏳ Attente 1 minute pour observation...');
