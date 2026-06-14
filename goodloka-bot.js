@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (correction faux positifs fin de manche)
+// goodloka-bot.js – Bot de domino GoodLoka (détection fin de match améliorée + vidéo)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -349,10 +349,13 @@ async function waitForMyTurn(page, timeout = 28000) {
     return false;
 }
 
-// --- Détection de fin de manche (corrigée) ---
+// --- Détection de fin de manche (compte à rebours "Prochain round") ---
 async function isRoundOver(page) {
     return await page.evaluate(() => {
-        // Popup de fin visible avec texte explicite
+        const bodyText = document.body.innerText.toLowerCase();
+        if (/prochain round dans|next round in/i.test(bodyText)) {
+            return true;
+        }
         const popupSelectors = ['.modal', '.popup', '.overlay', '.victory', '.defeat'];
         for (const sel of popupSelectors) {
             const el = document.querySelector(sel);
@@ -360,13 +363,10 @@ async function isRoundOver(page) {
                 if (/a gagné|manche terminée|score final|revanche/i.test(el.textContent)) return true;
             }
         }
-        // Texte dans la page, mais pas si on voit "c'est votre tour"
-        const bodyText = document.body.innerText.toLowerCase();
         if (/a gagné|manche terminée|score final|revanche/i.test(bodyText) &&
             !/c['’]?est votre tour|à vous de jouer/i.test(bodyText)) {
             return true;
         }
-        // Boutons de fin visibles ET plateau absent
         const buttons = [...document.querySelectorAll('button')];
         const endTexts = ['rejouer', 'suivant', 'menu', 'quitter'];
         const hasEndButton = buttons.some(btn => endTexts.some(t => btn.textContent.trim().toLowerCase().includes(t)) && btn.offsetParent !== null);
@@ -378,11 +378,22 @@ async function isRoundOver(page) {
     });
 }
 
-// --- Détection de fin de match complet ---
+// --- Détection de fin de match complet (améliorée) ---
 async function isMatchOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
-        return /a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final/i.test(bodyText);
+        if (/a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final|victoire !|défaite !|match gagné|match perdu|vous remportez|vous perdez/i.test(bodyText)) {
+            return true;
+        }
+        const buttons = [...document.querySelectorAll('button')];
+        const matchEndTexts = ['revanche', 'quitter le match', 'menu principal'];
+        for (const btn of buttons) {
+            const txt = btn.textContent.trim().toLowerCase();
+            if (matchEndTexts.some(t => txt.includes(t)) && btn.offsetParent !== null) {
+                return true;
+            }
+        }
+        return false;
     });
 }
 
@@ -409,7 +420,6 @@ async function playOneRound(page, roundNumber) {
             continue;
         }
 
-        // Vérifier fin de manche après avoir obtenu le tour
         if (await isRoundOver(page)) {
             console.log('🏁 Fin de manche détectée avant le coup.');
             break;
@@ -438,8 +448,8 @@ async function playOneRound(page, roundNumber) {
         await delay(2000);
     }
 
-    console.log('⏳ Attente de 8 secondes pour la transition...');
-    await delay(8000);
+    console.log('⏳ Attente de 10 secondes pour la transition...');
+    await delay(10000);
 }
 
 // --- Main ---
