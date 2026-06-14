@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de jeu de dominos GoodLoka (correction Node detached + stratégie premier coup)
+// goodloka-bot.js – Bot de domino GoodLoka (stratégie avancée)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -20,7 +20,7 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Remplissage humain ---
+// --- Utilitaires DOM ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -43,7 +43,6 @@ async function fillFieldHuman(page, selector, value, fieldName) {
     await delay(200 + Math.random() * 300);
 }
 
-// --- Clic humain avec trajectoire ---
 async function humanClickAt(page, coords) {
     const start = await page.evaluate(() => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 }));
     const steps = 20;
@@ -58,7 +57,6 @@ async function humanClickAt(page, coords) {
     await page.mouse.click(coords.x, coords.y);
 }
 
-// --- Trouver un bouton par texte ---
 async function findButtonByText(page, text) {
     const btns = await page.$$('button');
     for (const btn of btns) {
@@ -68,7 +66,7 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Récupération des extrémités ---
+// --- Lecture du jeu ---
 async function getBoardEnds(page) {
     return await page.evaluate(() => {
         const els = document.querySelectorAll('.domino_board .domino');
@@ -84,7 +82,6 @@ async function getBoardEnds(page) {
     });
 }
 
-// --- Récupération des dominos jouables ---
 async function getPlayableDominoes(page) {
     const handles = await page.$$('.mx_2.domino.cursor_pointer');
     const dominoes = [];
@@ -106,7 +103,6 @@ async function getPlayableDominoes(page) {
     return dominoes;
 }
 
-// --- Récupération de TOUTE la main ---
 async function getFullHand(page) {
     return await page.evaluate(() => {
         const boardDominoes = [...document.querySelectorAll('.domino_board .domino')];
@@ -128,10 +124,94 @@ async function getFullHand(page) {
     });
 }
 
-// --- Choix du meilleur domino ---
-function chooseBestDomino(hand, ends) {
+// --- Suivi des dominos déjà joués (pour la stratégie) ---
+let playedDominoes = new Set();
+
+function normalize(v1, v2) {
+    // Toujours petit:grand, ex : 2:5 devient "2:5"
+    const a = parseInt(v1);
+    const b = parseInt(v2);
+    return a <= b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+async function updatePlayedDominoes(page) {
+    const dominoes = await page.evaluate(() => {
+        const els = document.querySelectorAll('.domino_board .domino');
+        return [...els].map(el => {
+            const left = el.querySelector('.domino_left');
+            const right = el.querySelector('.domino_right');
+            const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
+            const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+            return { left: lv, right: rv };
+        });
+    });
+    dominoes.forEach(d => {
+        if (d.left !== '?' && d.right !== '?') {
+            playedDominoes.add(normalize(d.left, d.right));
+        }
+    });
+}
+
+// --- Stratégie avancée ---
+
+// Compte le nombre de dominos restants (non joués) qui contiennent la valeur `val`
+function countRemainingWithValue(val, playedSet) {
+    let count = 0;
+    for (let i = 0; i <= 6; i++) {
+        const dom = normalize(val, i);
+        if (!playedSet.has(dom)) count++;
+    }
+    return count;
+}
+
+// Évalue le score d'un coup (domino à jouer) en fonction de la situation
+function scoreMove(domino, ends, hand, playedSet) {
+    let score = 0;
+    const { left, right } = ends;
+    const valLeft = parseInt(domino.leftVal);
+    const valRight = parseInt(domino.rightVal);
+
+    // Le domino doit correspondre à au moins une extrémité (sinon il ne serait pas jouable)
+    const matchesLeft = (valLeft === parseInt(left) || valRight === parseInt(left));
+    const matchesRight = (valLeft === parseInt(right) || valRight === parseInt(right));
+    if (!matchesLeft && !matchesRight) return -Infinity;
+
+    // Nouvelles extrémités après le coup
+    const newLeft = matchesLeft ? (valLeft === parseInt(left) ? valRight : valLeft) : left;
+    const newRight = matchesRight ? (valLeft === parseInt(right) ? valRight : valLeft) : right;
+
+    // 1. Blocage : si les deux extrémités deviennent identiques
+    if (newLeft === newRight) {
+        const remainingWithValue = countRemainingWithValue(newLeft, playedSet);
+        if (remainingWithValue <= 1) {
+            score += 50;   // quasi-blocage : l'adversaire a très peu de chances de jouer
+        } else {
+            score += 20;   // blocage partiel
+        }
+    }
+
+    // 2. Réduction de la somme de la main (malus proportionnel)
+    const handSum = hand.reduce((sum, d) => sum + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
+    const dominoSum = valLeft + valRight;
+    const remainingSum = handSum - dominoSum;
+    score -= remainingSum * 0.5;   // on préfère diminuer la somme restante
+
+    // 3. Bonus si on se débarrasse d'un double (difficile à placer plus tard)
+    if (domino.leftVal === domino.rightVal) {
+        score += 10;
+    }
+
+    // 4. Bonus si l'une des nouvelles extrémités correspond à une valeur qu'on possède encore
+    const myValues = new Set(hand.map(d => [d.leftVal, d.rightVal]).flat());
+    if (myValues.has(newLeft.toString())) score += 5;
+    if (myValues.has(newRight.toString())) score += 5;
+
+    return score;
+}
+
+function chooseBestDomino(hand, ends, playedSet) {
     if (!ends) {
-        // Premier coup : plus gros double, sinon plus lourd
+        // Premier tour : on garde l'ancienne logique (plus gros double ou plus lourd)
         const doubles = hand.filter(d => d.leftVal === d.rightVal);
         if (doubles.length > 0) {
             doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal));
@@ -140,22 +220,24 @@ function chooseBestDomino(hand, ends) {
         hand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)));
         return hand[0];
     }
-    const { left, right } = ends;
-    for (const d of hand) {
-        if ((d.leftVal === left && d.rightVal === right) || (d.leftVal === right && d.rightVal === left)) return d;
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const domino of hand) {
+        const s = scoreMove(domino, ends, hand, playedSet);
+        if (s > bestScore) {
+            bestScore = s;
+            best = domino;
+        }
     }
-    for (const d of hand) {
-        if (d.leftVal === d.rightVal && (d.leftVal === left || d.leftVal === right)) return d;
-    }
-    for (const d of hand) {
-        if (d.leftVal === left || d.rightVal === left || d.leftVal === right || d.rightVal === right) return d;
-    }
-    return hand[0];
+    return best || hand[0];
 }
 
-// --- Jouer un tour (avec re-sélection du domino) ---
-    
+// --- Jouer un tour (avec re-sélection safe) ---
 async function playTurn(page) {
+    // Mettre à jour le suivi des dominos déjà posés
+    await updatePlayedDominoes(page);
+
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
     const hand = await getPlayableDominoes(page);
@@ -166,10 +248,10 @@ async function playTurn(page) {
         return;
     }
 
-    const chosen = chooseBestDomino(hand, ends);
+    const chosen = chooseBestDomino(hand, ends, playedDominoes);
     console.log(`🎯 Choix : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // Essayer de localiser le domino par ses valeurs et de cliquer (avec retry)
+    // Re-sélection sécurisée du domino (évite le detached node)
     let success = false;
     for (let attempt = 0; attempt < 3; attempt++) {
         const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
@@ -222,6 +304,7 @@ async function playTurn(page) {
     }
     await delay(2000);
 }
+
 // --- Attente active de son tour ---
 async function waitForMyTurn(page, timeout = 28000) {
     console.log('⏳ Attente de mon tour...');
@@ -241,12 +324,54 @@ async function waitForMyTurn(page, timeout = 28000) {
     return false;
 }
 
+// --- Vérification de fin de partie ---
+async function isGameOver(page) {
+    return await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        if (/victoire|défaite|a gagné|partie terminée|fin de partie/i.test(bodyText)) {
+            return true;
+        }
+        const buttons = [...document.querySelectorAll('button')];
+        const endTexts = ['rejouer', 'quitter', 'retour', 'menu', 'accueil'];
+        for (const btn of buttons) {
+            const txt = btn.textContent.trim().toLowerCase();
+            if (endTexts.some(t => txt.includes(t))) {
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
 // --- Boucle de jeu ---
 async function gameLoop(page, maxTurns = 100) {
+    let consecutiveMisses = 0;
+
     for (let turn = 0; turn < maxTurns; turn++) {
+        if (await isGameOver(page)) {
+            console.log('🏁 Partie terminée (message de fin détecté).');
+            break;
+        }
+
+        const board = await page.$('.domino_board');
+        if (!board) {
+            consecutiveMisses++;
+            if (consecutiveMisses >= 3) {
+                console.log('🏁 Plateau absent depuis plusieurs tours → partie terminée.');
+                break;
+            }
+        } else {
+            consecutiveMisses = 0;
+        }
+
         const myTurn = await waitForMyTurn(page);
         if (!myTurn) {
             console.log('⏰ Tour manqué. Passage au suivant...');
+            consecutiveMisses++;
+            if (await isGameOver(page)) {
+                console.log('🏁 Partie terminée après tour manqué.');
+                break;
+            }
             continue;
         }
 
@@ -256,9 +381,8 @@ async function gameLoop(page, maxTurns = 100) {
 
         await playTurn(page);
 
-        const board = await page.$('.domino_board');
-        if (!board) {
-            console.log('🏁 Partie terminée');
+        if (await isGameOver(page)) {
+            console.log('🏁 Partie terminée après mon coup.');
             break;
         }
 
