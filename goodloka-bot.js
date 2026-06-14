@@ -303,16 +303,17 @@ async function gameLoop(page, maxTurns = 100) {
         (await findButtonByText(page, 'Créer la partie'))?.click();
         await delay(3000);
 
+        
         // 4. Attente adversaire (max waitTimeout)
-        console.log('⏳ Attente adversaire...');
-        const startWait = Date.now();
-        while (Date.now() - startWait < waitTimeout) {
-            if ((await page.$('.domino_board')) || (await page.$('button:has-text("Jouer")'))) {
-                console.log('🎮 Partie commencée !');
-                break;
-            }
-            await delay(10000);
-        }
+console.log('⏳ Attente adversaire...');
+const startWait = Date.now();
+while (Date.now() - startWait < waitTimeout) {
+    if ((await page.$('.domino_board')) || (await findButtonByText(page, 'Jouer'))) {
+        console.log('🎮 Partie commencée !');
+        break;
+    }
+    await delay(10000);
+}
 
         // 5. Jouer
         await gameLoop(page);
