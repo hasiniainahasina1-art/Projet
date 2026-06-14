@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (détection fin de match améliorée + vidéo)
+// goodloka-bot.js – Bot de domino GoodLoka (anti-boucle + détection bouton Terminé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -224,44 +224,48 @@ function scoreMove(domino, ends, hand, playedSet) {
     return score;
 }
 
-function chooseBestDomino(hand, ends, playedSet) {
+function chooseBestDomino(hand, ends, playedSet, excludeValue = null) {
+    // Si une valeur est exclue, on la retire de la main pour ce choix
+    const filteredHand = excludeValue ? hand.filter(d => d.value !== excludeValue) : hand;
+    const effectiveHand = filteredHand.length > 0 ? filteredHand : hand; // fallback si tout est exclu
+
     if (!ends) {
-        const doubles = hand.filter(d => d.leftVal === d.rightVal);
+        const doubles = effectiveHand.filter(d => d.leftVal === d.rightVal);
         if (doubles.length > 0) {
             doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal));
             return doubles[0];
         }
-        hand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)));
-        return hand[0];
+        effectiveHand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)));
+        return effectiveHand[0];
     }
 
     let best = null;
     let bestScore = -Infinity;
-    for (const domino of hand) {
-        const s = scoreMove(domino, ends, hand, playedSet);
+    for (const domino of effectiveHand) {
+        const s = scoreMove(domino, ends, effectiveHand, playedSet);
         if (s > bestScore) {
             bestScore = s;
             best = domino;
         }
     }
-    return best || hand[0];
+    return best || effectiveHand[0];
 }
 
-// --- Jouer un tour avec validation ---
-async function playTurn(page, previousHandCount) {
+// --- Jouer un tour avec validation et exclusion du dernier échec ---
+async function playTurn(page, previousHandCount, excludedValue = null) {
     await updatePlayedDominoes(page);
 
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
-    const hand = await getPlayableDominoes(page);
+    let hand = await getPlayableDominoes(page);
     console.log(`🖐️ ${hand.length} dominos jouables`);
 
     if (hand.length === 0) {
         console.log('🤷 Aucun domino jouable, le site va sauter automatiquement.');
-        return 'skipped';
+        return { status: 'skipped' };
     }
 
-    const chosen = chooseBestDomino(hand, ends, playedDominoes);
+    const chosen = chooseBestDomino(hand, ends, playedDominoes, excludedValue);
     console.log(`🎯 Choix : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
     let success = false;
@@ -302,7 +306,7 @@ async function playTurn(page, previousHandCount) {
 
     if (!success) {
         console.log('❌ Impossible de cliquer sur le domino.');
-        return 'failed';
+        return { status: 'failed', failedValue: chosen.value };
     }
 
     const jouerBtn = await findButtonByText(page, 'Jouer');
@@ -323,33 +327,14 @@ async function playTurn(page, previousHandCount) {
 
     if (newHandCount >= previousHandCount) {
         console.log('⚠️ Le coup semble avoir échoué (main inchangée).');
-        return 'failed';
+        return { status: 'failed', failedValue: chosen.value };
     }
 
     console.log('✅ Coup joué avec succès.');
-    return 'played';
+    return { status: 'played' };
 }
 
-// --- Attente de son tour ---
-async function waitForMyTurn(page, timeout = 28000) {
-    console.log('⏳ Attente de mon tour...');
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-        const element = await page.evaluate(() => {
-            const bodyText = document.body.innerText;
-            return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
-        });
-        if (element) {
-            console.log('🔔 C’est mon tour !');
-            return true;
-        }
-        await delay(1000);
-    }
-    console.log('⚠️ Tour non détecté dans le délai imparti.');
-    return false;
-}
-
-// --- Détection de fin de manche (compte à rebours "Prochain round") ---
+// --- Détection de fin de manche ---
 async function isRoundOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -378,7 +363,7 @@ async function isRoundOver(page) {
     });
 }
 
-// --- Détection de fin de match complet (améliorée) ---
+// --- Détection de fin de match complet (ajout du bouton "Terminé") ---
 async function isMatchOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -386,15 +371,43 @@ async function isMatchOver(page) {
             return true;
         }
         const buttons = [...document.querySelectorAll('button')];
-        const matchEndTexts = ['revanche', 'quitter le match', 'menu principal'];
+        // Détection du bouton "Terminé" (ou "Terminer", "Quitter le match", etc.)
         for (const btn of buttons) {
             const txt = btn.textContent.trim().toLowerCase();
-            if (matchEndTexts.some(t => txt.includes(t)) && btn.offsetParent !== null) {
+            if ((txt.includes('terminé') || txt.includes('terminer') || txt.includes('quitter le match')) && btn.offsetParent !== null) {
                 return true;
             }
         }
         return false;
     });
+}
+
+// --- Attente combinée (tour + fin de manche) ---
+async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
+    console.log('⏳ Attente de mon tour...');
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        if (await isRoundOver(page)) {
+            console.log('🏁 Fin de manche détectée pendant l’attente.');
+            return 'round_over';
+        }
+        const board = await page.$('.domino_board');
+        if (!board) {
+            await delay(1000);
+            continue;
+        }
+        const myTurn = await page.evaluate(() => {
+            const bodyText = document.body.innerText;
+            return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
+        });
+        if (myTurn) {
+            console.log('🔔 C’est mon tour !');
+            return 'my_turn';
+        }
+        await delay(1000);
+    }
+    console.log('⚠️ Tour non détecté dans le délai imparti.');
+    return 'timeout';
 }
 
 // --- Jouer une manche complète ---
@@ -403,25 +416,53 @@ async function playOneRound(page, roundNumber) {
     await delay(3000);
     playedDominoes.clear();
     let turn = 1;
+    let consecutiveMisses = 0;
+    let lastFailedValue = null; // mémorise le dernier domino qui a échoué
 
     while (true) {
         const board = await page.$('.domino_board');
         if (!board) {
-            console.log('⚠️ Plateau disparu, attente...');
-            await delay(2000);
+            console.log('⚠️ Plateau disparu, attente de la transition...');
+            const start = Date.now();
+            while (Date.now() - start < 30000) {
+                if (await isRoundOver(page)) {
+                    console.log('🏁 Fin de manche confirmée (plateau absent + popup).');
+                    break;
+                }
+                if (await page.$('.domino_board')) {
+                    console.log('✅ Plateau réapparu, on reprend.');
+                    break;
+                }
+                await delay(2000);
+            }
             if (await isRoundOver(page)) break;
+            if (!(await page.$('.domino_board'))) {
+                console.log('⚠️ Plateau toujours absent, on force la fin de manche.');
+                break;
+            }
             continue;
         }
 
-        const myTurn = await waitForMyTurn(page);
-        if (!myTurn) {
-            console.log('⏰ Tour manqué.');
+        const waitResult = await waitForMyTurnOrRoundEnd(page);
+        if (waitResult === 'round_over') {
+            console.log('🏁 Manche terminée (détectée par waitForMyTurn).');
+            break;
+        }
+        if (waitResult === 'timeout') {
+            console.log('⏰ Tour manqué (timeout).');
+            consecutiveMisses++;
+            if (consecutiveMisses >= 5) {
+                console.log('⚠️ Trop de tours manqués consécutifs → fin de manche forcée.');
+                break;
+            }
             await delay(2000);
             continue;
         }
+        // my_turn
+        consecutiveMisses = 0;
 
         if (await isRoundOver(page)) {
-            console.log('🏁 Fin de manche détectée avant le coup.');
+            console.log('🏁 Fin de manche détectée juste avant le coup.');
             break;
         }
 
@@ -430,9 +471,13 @@ async function playOneRound(page, roundNumber) {
         fullHand.forEach(d => console.log(`   ${d.playable ? '✔️' : '✖️'} ${d.value}`));
 
         const handSizeBefore = fullHand.length;
-        const result = await playTurn(page, handSizeBefore);
-        if (result === 'failed') {
+        const result = await playTurn(page, handSizeBefore, lastFailedValue);
+
+        if (result.status === 'failed') {
             console.log('⚠️ Échec du coup, on attend le tour suivant.');
+            lastFailedValue = result.failedValue; // on exclura ce domino au prochain tour
+        } else {
+            lastFailedValue = null; // reset si succès ou skipped
         }
 
         if (await isRoundOver(page)) {
@@ -550,8 +595,8 @@ async function playOneRound(page, roundNumber) {
 
             console.log('⏳ Attente de la prochaine manche...');
             let newRound = false;
-            const waitStart = Date.now();
-            while (Date.now() - waitStart < 120000) {
+            const waitStart2 = Date.now();
+            while (Date.now() - waitStart2 < 120000) {
                 if (await isMatchOver(page)) break;
                 const board = await page.$('.domino_board');
                 const myTurn = await page.evaluate(() => {
