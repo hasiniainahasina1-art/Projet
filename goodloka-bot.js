@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION EXPERT ROBUSTE)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION EXPERT RAPIDE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -219,7 +219,7 @@ function getFamilyControl(myHandValues, unknownSet) {
 }
 
 // ============================================================
-// STRATÉGIE EXPERT (fermeture + simulation 2 tours)
+// STRATÉGIE EXPERT
 // ============================================================
 function isValidMove(domino, ends) {
     if (!ends) return true;
@@ -302,7 +302,6 @@ function scoreMoveExpert(domino, ends, myHand, opponentPossibleHand, unknownSet,
 }
 
 function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, myHandAll) {
-    // 🔥 FILTRER LES DOMINOS VALIDES
     const validHand = ends ? hand.filter(d => isValidMove(d, ends)) : hand;
     if (validHand.length === 0) {
         console.log('⚠️ Aucun domino valide trouvé !');
@@ -327,7 +326,7 @@ function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, my
 }
 
 // ============================================================
-// JOUER UN TOUR (EXPERT)
+// JOUER UN TOUR (RAPIDE)
 // ============================================================
 async function playTurn(page, previousHandCount) {
     await updatePlayedDominoes(page);
@@ -343,11 +342,8 @@ async function playTurn(page, previousHandCount) {
         return 'skipped';
     }
 
-    // 🔥 FILTRAGE CRITIQUE DES DOMINOS VALIDES
     if (ends) {
-        const beforeCount = hand.length;
         hand = hand.filter(d => isValidMove(d, ends));
-        console.log(`   ${beforeCount - hand.length} dominos invalides ignorés.`);
         if (hand.length === 0) {
             console.log('❌ Aucun domino valide après filtrage !');
             return 'skipped';
@@ -365,57 +361,105 @@ async function playTurn(page, previousHandCount) {
         }));
 
     if (!chosen) {
-        console.log('❌ Aucun domino choisi par l\'expert.');
+        console.log('❌ Aucun domino choisi.');
         return 'skipped';
     }
 
     console.log(`🎯 Choix expert : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // Double-clic sécurisé
-    let success = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
+    // DOUBLE-CLIC RAPIDE via evaluate (plus rapide que la souris)
+    let clicked = false;
+    const clickedFirst = await page.evaluate(({ leftVal, rightVal }) => {
+        const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
+        for (const d of dominos) {
+            const left = d.querySelector('.domino_left'), right = d.querySelector('.domino_right');
+            const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
+            const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
+            if (lv === leftVal && rv === rightVal) {
+                d.click();
+                return true;
+            }
+        }
+        return false;
+    }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
+
+    if (clickedFirst) {
+        await delay(80);
+        await page.evaluate(({ leftVal, rightVal }) => {
             const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
             for (const d of dominos) {
                 const left = d.querySelector('.domino_left'), right = d.querySelector('.domino_right');
                 const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
                 const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
-                if (lv === leftVal && rv === rightVal) return d;
+                if (lv === leftVal && rv === rightVal) { d.click(); return true; }
             }
-            return null;
+            return false;
         }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
-
-        if (!dominoElement) { console.log(`⚠️ Tentative ${attempt + 1} : domino introuvable.`); await delay(300); continue; }
-        const box = await dominoElement.boundingBox();
-        if (!box) { console.log(`⚠️ Tentative ${attempt + 1} : boundingBox null.`); await delay(300); continue; }
-
-        const x = box.x + box.width / 2, y = box.y + box.height / 2;
-        await page.mouse.click(x, y);
-        await delay(200);
-        await page.mouse.click(x, y);
-        success = true;
-        break;
+        clicked = true;
+    } else {
+        // Fallback souris
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const box = await page.evaluate(({ leftVal, rightVal }) => {
+                const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
+                for (const d of dominos) {
+                    const left = d.querySelector('.domino_left'), right = d.querySelector('.domino_right');
+                    const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
+                    const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
+                    if (lv === leftVal && rv === rightVal) {
+                        const r = d.getBoundingClientRect();
+                        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                    }
+                }
+                return null;
+            }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
+            if (box) {
+                await page.mouse.click(box.x, box.y);
+                await delay(80);
+                await page.mouse.click(box.x, box.y);
+                clicked = true;
+                break;
+            }
+            await delay(100);
+        }
     }
 
-    if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return 'failed'; }
-
-    const jouerBtn = await findButtonByText(page, 'Jouer');
-    if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
-    else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
-
-    await delay(1500);
-    const newHandCount = await page.evaluate(() => {
-        const board = document.querySelectorAll('.domino_board .domino');
-        return document.querySelectorAll('.domino').length - board.length;
-    });
-
-    if (newHandCount >= previousHandCount) {
-        console.log('⚠️ Le coup semble avoir échoué (main inchangée).');
+    if (!clicked) {
+        console.log('❌ Impossible de cliquer sur le domino.');
         return 'failed';
     }
 
-    console.log('✅ Coup joué avec succès.');
+    // TROUVER LE BOUTON JOUER (recherche large)
+    await delay(200);
+    const jouerBtn = await page.evaluateHandle(() => {
+        const buttons = [...document.querySelectorAll('button')];
+        for (const btn of buttons) {
+            if (btn.offsetParent === null) continue;
+            const txt = btn.textContent.trim().toLowerCase();
+            if (txt === 'jouer' || txt.includes('jouer') || txt === 'play' || txt.includes('valider')) return btn;
+        }
+        return null;
+    });
+
+    if (jouerBtn) {
+        await jouerBtn.click();
+        console.log('🖱️ Jouer');
+    } else {
+        await page.keyboard.press('Enter');
+        console.log('⏎ Entrée');
+    }
+
+    await delay(1000);
     return 'played';
+}
+
+// ============================================================
+// DÉTECTION PÉNALITÉ
+// ============================================================
+async function hasPenalty(page) {
+    return await page.evaluate(() => {
+        const bodyText = document.body.innerText.toLowerCase();
+        return /pénalité|penalty|avertissement|warning/i.test(bodyText);
+    });
 }
 
 // ============================================================
@@ -469,22 +513,25 @@ async function isMatchOver(page) {
 }
 
 // ============================================================
-// ATTENTE DU TOUR
+// ATTENTE DU TOUR (RAPIDE)
 // ============================================================
-async function waitForMyTurn(page, timeout = 28000) {
+async function waitForMyTurn(page, timeout = 20000) {
     console.log('⏳ Attente de mon tour...');
     const start = Date.now();
     while (Date.now() - start < timeout) {
         await handleChromeDialog(page);
-        if (await isRoundOver(page)) { console.log('🏁 Fin de manche détectée pendant l\'attente.'); return 'round_over'; }
+        if (await isRoundOver(page)) {
+            console.log('🏁 Fin de manche détectée pendant l\'attente.');
+            return 'round_over';
+        }
         const board = await page.$('.domino_board');
-        if (!board) { await delay(1000); continue; }
+        if (!board) { await delay(500); continue; }
         const myTurn = await page.evaluate(() => {
             const bodyText = document.body.innerText;
             return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
         });
         if (myTurn) { console.log('🔔 C\'est mon tour !'); return 'my_turn'; }
-        await delay(1000);
+        await delay(500);
     }
     console.log('⚠️ Tour non détecté dans le délai imparti.');
     return 'timeout';
@@ -495,7 +542,7 @@ async function waitForMyTurn(page, timeout = 28000) {
 // ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (mode EXPERT)`);
-    await delay(3000);
+    await delay(2000);
     playedDominoes.clear();
     opponentPassedValues.clear();
     let turn = 1, consecutiveMisses = 0;
@@ -509,7 +556,7 @@ async function playOneRound(page, roundNumber) {
             while (Date.now() - start < 30000) {
                 if (await isRoundOver(page)) { console.log('🏁 Fin de manche confirmée.'); break; }
                 if (await page.$('.domino_board')) { console.log('✅ Plateau réapparu.'); break; }
-                await delay(2000);
+                await delay(1500);
             }
             if (await isRoundOver(page)) break;
             if (!(await page.$('.domino_board'))) { console.log('⚠️ Plateau absent, fin forcée.'); break; }
@@ -521,7 +568,7 @@ async function playOneRound(page, roundNumber) {
         if (waitResult === 'timeout') {
             consecutiveMisses++;
             if (consecutiveMisses >= 5) { console.log('⚠️ Trop de tours manqués, fin forcée.'); break; }
-            await delay(2000); continue;
+            await delay(1000); continue;
         }
         consecutiveMisses = 0;
         if (await isRoundOver(page)) break;
@@ -534,7 +581,12 @@ async function playOneRound(page, roundNumber) {
         fullHand.forEach(d => console.log(`   ${d.playable ? '✔️' : '✖️'} ${d.value}`));
 
         const handSizeBefore = fullHand.length;
-        await playTurn(page, handSizeBefore);
+        const result = await playTurn(page, handSizeBefore);
+
+        if (result === 'failed' && await hasPenalty(page)) {
+            console.log('⚠️ Pénalité détectée, pause de sécurité.');
+            await delay(3000);
+        }
 
         previousEnds = await getBoardEnds(page);
 
@@ -542,7 +594,7 @@ async function playOneRound(page, roundNumber) {
         if (await isMatchOver(page)) return 'match_over';
         turn++;
         if (turn > 200) break;
-        await delay(2000);
+        await delay(1500);
     }
     console.log('⏳ Attente de 10 secondes pour la transition...');
     await delay(10000);
