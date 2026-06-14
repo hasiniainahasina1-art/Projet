@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (multi-manches jusqu'au score cible)
+// goodloka-bot.js – Bot de domino GoodLoka (multi-manches corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -314,16 +314,19 @@ async function waitForMyTurn(page, timeout = 28000) {
 async function isRoundOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
-        if (/victoire|défaite|a gagné|partie terminée|fin de partie/i.test(bodyText)) {
+        // Détection de messages de fin de manche
+        if (/a gagné cette manche|manche terminée|vous avez gagné cette manche|vous avez perdu cette manche/i.test(bodyText)) {
             return true;
         }
-        // Détection de boutons typiques de fin de manche (mais pas de fin de match)
+        // Boutons "Rejouer", "Suivant", "Menu", "Quitter" (souvent présents en fin de manche)
         const buttons = [...document.querySelectorAll('button')];
-        const endTexts = ['rejouer', 'quitter', 'retour', 'menu', 'suivant'];
+        const endTexts = ['rejouer', 'quitter', 'retour', 'menu', 'suivant', 'accueil'];
         for (const btn of buttons) {
             const txt = btn.textContent.trim().toLowerCase();
             if (endTexts.some(t => txt.includes(t))) {
-                return true;
+                // Mais on vérifie que le plateau n'est pas visible (sinon c'est un bouton "Menu" dans l'interface en cours de jeu)
+                const board = document.querySelector('.domino_board');
+                if (!board) return true; // Pas de plateau + bouton fin = fin de manche
             }
         }
         return false;
@@ -334,27 +337,63 @@ async function isRoundOver(page) {
 async function isMatchOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
-        // Messages indiquant la fin du match entier (score final)
-        if (/a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final/i.test(bodyText)) {
-            return true;
-        }
-        return false;
+        return /a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final/i.test(bodyText);
     });
 }
 
-// --- Boucle de jeu pour UNE manche ---
+// --- Attendre le début d'une nouvelle manche de manière stable ---
+async function waitForNewRound(page, timeout = 60000) {
+    console.log('⏳ Attente du début de la prochaine manche...');
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        if (await isMatchOver(page)) {
+            console.log('🏆 Match terminé pendant l\'attente.');
+            return false;
+        }
+
+        // Vérifier la présence du plateau et "c'est votre tour"
+        const board = await page.$('.domino_board');
+        if (board) {
+            const myTurn = await page.evaluate(() => {
+                const bodyText = document.body.innerText;
+                return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
+            });
+            if (myTurn) {
+                // Attendre un peu pour que les éléments de fin de manche disparaissent
+                await delay(3000);
+                // Revérifier que ce n'est pas une fausse alerte
+                const stillBoard = await page.$('.domino_board');
+                const stillMyTurn = await page.evaluate(() => {
+                    const bodyText = document.body.innerText;
+                    return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
+                });
+                if (stillBoard && stillMyTurn && !(await isRoundOver(page))) {
+                    console.log('🎲 Nouvelle manche stable détectée !');
+                    return true;
+                }
+            }
+        }
+        await delay(3000);
+    }
+    console.log('⚠️ Nouvelle manche non détectée dans le délai.');
+    return false;
+}
+
+// --- Jouer une manche complète ---
 async function playOneRound(page, roundNumber) {
-    console.log(`\n🎲 Manche ${roundNumber} démarrée`);
+    console.log(`\n🎲 Début de la manche ${roundNumber}`);
+    // Attendre que l'interface soit complètement prête
+    await delay(2000);
     // Réinitialiser le suivi des dominos pour cette manche
     playedDominoes.clear();
-
     let consecutiveMisses = 0;
-    const maxTurns = 100; // sécurité
+    const maxTurns = 100;
+
     for (let turn = 0; turn < maxTurns; turn++) {
-        // Vérifier fin de manche avant chaque tour
+        // Vérification de fin de manche AVANT d'attendre son tour
         if (await isRoundOver(page)) {
-            console.log('🏁 Fin de la manche détectée.');
-            return; // sortir de la manche
+            console.log('🏁 Fin de manche détectée avant le tour.');
+            return;
         }
 
         const board = await page.$('.domino_board');
@@ -392,34 +431,6 @@ async function playOneRound(page, roundNumber) {
 
         await delay(2000);
     }
-}
-
-// --- Attendre le début d'une nouvelle manche (plateau + "c'est votre tour") ---
-async function waitForNewRound(page, timeout = 60000) {
-    console.log('⏳ Attente du début de la prochaine manche...');
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-        // Vérifier si le match complet est déjà fini
-        if (await isMatchOver(page)) {
-            console.log('🏆 Match terminé pendant l\'attente.');
-            return false;
-        }
-        // Un nouveau plateau et "c'est votre tour" signifie qu'une nouvelle manche commence
-        const board = await page.$('.domino_board');
-        if (board) {
-            const myTurn = await page.evaluate(() => {
-                const bodyText = document.body.innerText;
-                return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
-            });
-            if (myTurn) {
-                console.log('🎲 Nouvelle manche détectée !');
-                return true;
-            }
-        }
-        await delay(3000);
-    }
-    console.log('⚠️ Nouvelle manche non détectée dans le délai.');
-    return false;
 }
 
 // --- Main ---
@@ -490,7 +501,7 @@ async function waitForNewRound(page, timeout = 60000) {
         (await findButtonByText(page, 'Créer la partie'))?.click();
         await delay(3000);
 
-        // 4. Attente du tout premier adversaire
+        // 4. Attente adversaire première manche
         console.log('⏳ Attente adversaire pour la première manche...');
         const startWait = Date.now();
         while (Date.now() - startWait < waitTimeout) {
@@ -506,16 +517,14 @@ async function waitForNewRound(page, timeout = 60000) {
         while (true) {
             await playOneRound(page, roundNumber);
 
-            // Vérifier si le match global est fini
             if (await isMatchOver(page)) {
-                console.log('🏆 Match terminé (score cible atteint).');
+                console.log('🏆 Match terminé (score final atteint).');
                 break;
             }
 
-            // Attendre la prochaine manche
             const newRound = await waitForNewRound(page);
             if (!newRound) {
-                console.log('⚠️ Impossible de détecter une nouvelle manche, arrêt.');
+                console.log('⚠️ Aucune nouvelle manche, arrêt.');
                 break;
             }
             roundNumber++;
