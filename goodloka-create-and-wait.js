@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – version corrigée (analyse du plateau et de la main)
+// goodloka-create-and-wait.js – version avec affichage complet de la main et du plateau
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -69,7 +69,6 @@ async function humanClickAt(page, coords) {
     console.log(`🖱️ Clic à (${coords.x}, ${coords.y})`);
 }
 
-// --- Trouver un bouton par son texte exact ---
 async function findButtonByText(page, text) {
     const btns = await page.$$('button');
     for (const btn of btns) {
@@ -89,13 +88,13 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Analyse de l'état du jeu (plateau + main) ---
+// --- Analyse complète de l'état du jeu ---
 async function analyzeGameState(page) {
-    console.log('🔍 Analyse de l\'état du jeu...');
+    console.log('🔍 Analyse complète du jeu...');
     await delay(3000);
     await page.screenshot({ path: path.join(screenshotsDir, 'game_state.png'), fullPage: true });
 
-    // Dominos sur le plateau
+    // Plateau
     const boardDominoes = await page.$$eval('.domino_board .domino', els =>
         els.map(el => {
             const left = el.querySelector('.domino_left');
@@ -103,33 +102,41 @@ async function analyzeGameState(page) {
             const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
             const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
             const rect = el.getBoundingClientRect();
-            return {
-                value: `${lv}:${rv}`,
-                x: Math.round(rect.x),
-                y: Math.round(rect.y)
-            };
+            return { value: `${lv}:${rv}`, x: Math.round(rect.x), y: Math.round(rect.y) };
         })
     );
     console.log(`🎲 Plateau : ${boardDominoes.length} dominos`);
     boardDominoes.forEach(d => console.log(`   ${d.value} (x=${d.x}, y=${d.y})`));
 
-    // Votre main (dominos cliquables)
-    const handDominoes = await page.$$eval('.mx_2.domino.cursor_pointer', els =>
+    // Tous les dominos de la main (jouables ou non)
+    const allHandDominoes = await page.$$eval('.mx_2.domino', els =>
         els.map(el => {
             const left = el.querySelector('.domino_left');
             const right = el.querySelector('.domino_right');
             const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
             const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+            const isPlayable = el.classList.contains('cursor_pointer');
             return {
                 value: `${lv}:${rv}`,
-                index: el.getAttribute('data-index')
+                index: el.getAttribute('data-index'),
+                playable: isPlayable
             };
         })
     );
-    console.log(`🖐️ Votre main : ${handDominoes.length} dominos`);
-    handDominoes.forEach(d => console.log(`   ${d.value} (index ${d.index})`));
+    const handPlayable = allHandDominoes.filter(d => d.playable);
+    const handInactive = allHandDominoes.filter(d => !d.playable);
 
-    return { boardDominoes, handDominoes };
+    console.log(`🖐️ Votre main : ${allHandDominoes.length} dominos (${handPlayable.length} jouables, ${handInactive.length} inactifs)`);
+    if (handPlayable.length > 0) {
+        console.log('   Jouables :');
+        handPlayable.forEach(d => console.log(`      ${d.value} (index ${d.index})`));
+    }
+    if (handInactive.length > 0) {
+        console.log('   Inactifs :');
+        handInactive.forEach(d => console.log(`      ${d.value} (index ${d.index})`));
+    }
+
+    return { boardDominoes, allHandDominoes, handPlayable, handInactive };
 }
 
 (async () => {
@@ -155,7 +162,6 @@ async function analyzeGameState(page) {
 
         console.log('⏎ Appui sur Entrée...');
         await page.keyboard.press('Enter');
-
         try { await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 }); } catch (e) {}
         await delay(5000);
         console.log(`📍 Connecté : ${page.url()}`);
@@ -247,6 +253,9 @@ async function analyzeGameState(page) {
 
         if (gameStarted) {
             await analyzeGameState(page);
+            // Garder la page ouverte 2 minutes pour observation
+            console.log('⏳ Observation de la partie pendant 2 minutes...');
+            await delay(120000);
         } else {
             console.log('⚠️ Aucun adversaire après 5 min.');
             await page.screenshot({ path: path.join(screenshotsDir, 'no_opponent.png'), fullPage: true });
