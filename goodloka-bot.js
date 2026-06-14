@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (EXPERT - correction critique)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION EXPERT ROBUSTE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -37,49 +37,33 @@ function startRecording(filename = 'game_recording.mp4') {
 }
 
 function stopRecording() {
-    if (ffmpegProcess) {
-        console.log('🛑 Arrêt de l\'enregistrement vidéo.');
-        ffmpegProcess.kill('SIGINT');
-        ffmpegProcess = null;
-    }
+    if (ffmpegProcess) { console.log('🛑 Arrêt de l\'enregistrement vidéo.'); ffmpegProcess.kill('SIGINT'); ffmpegProcess = null; }
 }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ============================================================
-// SUPPRESSION RADICALE DES POPUPS CHROME (avant chaque chargement)
+// GESTION DU DIALOGUE CHROME
 // ============================================================
-async function injectPopupKiller(page) {
-    await page.evaluateOnNewDocument(() => {
-        // Bloque les dialogues avant qu'ils n'apparaissent
-        window.alert = () => {};
-        window.confirm = () => true;
-        window.prompt = () => null;
-        // Supprime les bulles de mot de passe
-        const observer = new MutationObserver(() => {
-            document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div[class*="popup"], div[class*="bubble"], div[class*="infobar"]').forEach(el => {
-                if (!el.closest('.domino_board')) el.remove();
-            });
-        });
-        observer.observe(document.documentElement, { childList: true, subtree: true });
-    });
-}
-
-async function killChromePopups(page) {
-    await page.evaluate(() => {
-        const selectors = 'div[role="dialog"], div[role="alertdialog"], div[aria-label], div.modal, div.popup, div.overlay, div[class*="popup"], div[class*="modal"], div[class*="overlay"], div[class*="dialog"], div.infobar, div[class*="infobar"], div[class*="bubble"], div[class*="tooltip"], div[class*="notification"], div[class*="toast"]';
-        document.querySelectorAll(selectors).forEach(el => {
-            if (el && el.parentNode && !el.closest('.domino_board')) el.remove();
-        });
-        document.querySelectorAll('div, span, button').forEach(el => {
-            const txt = el.textContent.toLowerCase();
-            if ((txt.includes('password') || txt.includes('save') || txt.includes('never') ||
-                 txt.includes('enregistrer') || txt.includes('mot de passe') || txt.includes('traduire') ||
-                 txt.includes('translate')) && el.offsetParent && !el.closest('.domino_board')) {
-                el.remove();
+async function handleChromeDialog(page) {
+    try {
+        const btn = await page.evaluateHandle(() => {
+            const allBtns = [...document.querySelectorAll('button')];
+            for (const b of allBtns) {
+                const txt = b.textContent.trim().toLowerCase();
+                if (['never', 'save', 'enregistrer', 'jamais', 'no thanks', 'non merci'].includes(txt)) return b;
             }
+            const bubbles = document.querySelectorAll('div[role="dialog"], div[role="alertdialog"]');
+            for (const bubble of bubbles) {
+                for (const b of bubble.querySelectorAll('button')) {
+                    const txt = b.textContent.trim().toLowerCase();
+                    if (['never', 'save', 'enregistrer', 'jamais', 'no thanks', 'non merci'].includes(txt)) return b;
+                }
+            }
+            return null;
         });
-    });
+        if (btn) { await btn.click(); console.log('🖱️ Dialogue Chrome fermé'); await delay(1000); }
+    } catch (e) {}
 }
 
 // ============================================================
@@ -235,10 +219,10 @@ function getFamilyControl(myHandValues, unknownSet) {
 }
 
 // ============================================================
-// STRATÉGIE EXPERT (avec validation des extrémités)
+// STRATÉGIE EXPERT (fermeture + simulation 2 tours)
 // ============================================================
 function isValidMove(domino, ends) {
-    if (!ends) return true; // premier coup
+    if (!ends) return true;
     const valLeft = parseInt(domino.leftVal), valRight = parseInt(domino.rightVal);
     const endLeft = parseInt(ends.left), endRight = parseInt(ends.right);
     return (valLeft === endLeft || valRight === endLeft || valLeft === endRight || valRight === endRight);
@@ -275,6 +259,7 @@ function scoreMoveExpert(domino, ends, myHand, opponentPossibleHand, unknownSet,
         const newEnds = simulateMove(ends, domino, side);
         const newHand = myHand.filter(d => d.value !== domino.value);
         let bonus = 0;
+
         if (newEnds.left === newEnds.right) {
             const remaining = [...opponentPossibleHand].filter(d => {
                 const [a, b] = d.split(':').map(Number);
@@ -284,13 +269,17 @@ function scoreMoveExpert(domino, ends, myHand, opponentPossibleHand, unknownSet,
             else if (remaining <= 1) bonus += 80;
             else bonus += 30;
         }
+
         const family = getFamilyControl(new Set(newHand.map(d => d.value)), unknownSet);
-        const likelyAdversaryValues = Object.entries(family).filter(([_, v]) => v.control < 0.3).map(([val]) => val);
-        if (likelyAdversaryValues.includes(newEnds.left.toString())) bonus -= 20;
-        if (likelyAdversaryValues.includes(newEnds.right.toString())) bonus -= 20;
+        const likelyAdv = Object.entries(family).filter(([_, v]) => v.control < 0.3).map(([val]) => val);
+        if (likelyAdv.includes(newEnds.left.toString())) bonus -= 20;
+        if (likelyAdv.includes(newEnds.right.toString())) bonus -= 20;
+
         const newSum = newHand.reduce((s, d) => s + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
         bonus -= newSum * 0.6;
+
         if (domino.leftVal === domino.rightVal) bonus += 15;
+
         if (depth > 0 && opponentPossibleHand.size > 0) {
             const oppHand = [...opponentPossibleHand].slice(0, 20).map(d => {
                 const [a, b] = d.split(':').map(Number);
@@ -306,48 +295,43 @@ function scoreMoveExpert(domino, ends, myHand, opponentPossibleHand, unknownSet,
             }
             if (worstForMe !== Infinity) bonus += worstForMe * 0.3;
         }
+
         if (bonus > bestScore) bestScore = bonus;
     }
     return bestScore;
 }
 
-function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, myHandAll, failedValues = new Set()) {
-    // FILTRE : ne garder que les dominos qui correspondent aux extrémités
+function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, myHandAll) {
+    // 🔥 FILTRER LES DOMINOS VALIDES
     const validHand = ends ? hand.filter(d => isValidMove(d, ends)) : hand;
     if (validHand.length === 0) {
         console.log('⚠️ Aucun domino valide trouvé !');
-        return hand[0]; // fallback désespéré
+        return null;
     }
 
     const winNow = canWinNow(validHand, myHandAll);
-    if (winNow) {
-        console.log('🏆 COUP GAGNANT DÉTECTÉ !');
-        return winNow;
-    }
-
-    const filteredHand = validHand.filter(d => !failedValues.has(d.value));
-    const effectiveHand = filteredHand.length > 0 ? filteredHand : validHand;
+    if (winNow) { console.log('🏆 COUP GAGNANT DÉTECTÉ !'); return winNow; }
 
     if (!ends) {
-        const doubles = effectiveHand.filter(d => d.leftVal === d.rightVal);
+        const doubles = validHand.filter(d => d.leftVal === d.rightVal);
         if (doubles.length > 0) return doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal))[0];
-        return effectiveHand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)))[0];
+        return validHand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)))[0];
     }
 
     let best = null, bestScore = -Infinity;
-    for (const domino of effectiveHand) {
-        const s = scoreMoveExpert(domino, ends, effectiveHand, opponentPossibleHand, unknownSet, 2);
+    for (const domino of validHand) {
+        const s = scoreMoveExpert(domino, ends, validHand, opponentPossibleHand, unknownSet, 2);
         if (s > bestScore) { bestScore = s; best = domino; }
     }
-    return best || effectiveHand[0];
+    return best || validHand[0];
 }
 
 // ============================================================
-// JOUER UN TOUR (avec clic amélioré)
+// JOUER UN TOUR (EXPERT)
 // ============================================================
-async function playTurn(page, previousHandCount, failedValues) {
+async function playTurn(page, previousHandCount) {
     await updatePlayedDominoes(page);
-    await killChromePopups(page);
+    await handleChromeDialog(page);
 
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
@@ -356,18 +340,18 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (hand.length === 0) {
         console.log('🤷 Aucun domino jouable, le site va sauter automatiquement.');
-        return { status: 'skipped' };
+        return 'skipped';
     }
 
-    // VÉRIFICATION CRITIQUE : ne garder que les dominos qui correspondent aux extrémités
+    // 🔥 FILTRAGE CRITIQUE DES DOMINOS VALIDES
     if (ends) {
-        const validHand = hand.filter(d => isValidMove(d, ends));
-        if (validHand.length === 0) {
-            console.log('❌ ERREUR : aucun domino jouable ne correspond aux extrémités !');
-            console.log(`   Extrémités: ${ends.left}:${ends.right}, Jouables: ${hand.map(d => d.value).join(', ')}`);
-            return { status: 'skipped' }; // on laisse le site passer
+        const beforeCount = hand.length;
+        hand = hand.filter(d => isValidMove(d, ends));
+        console.log(`   ${beforeCount - hand.length} dominos invalides ignorés.`);
+        if (hand.length === 0) {
+            console.log('❌ Aucun domino valide après filtrage !');
+            return 'skipped';
         }
-        hand = validHand;
     }
 
     const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
@@ -378,18 +362,18 @@ async function playTurn(page, previousHandCount, failedValues) {
         [...myHandValues].map(v => {
             const [a, b] = v.split(':').map(Number);
             return { value: v, leftVal: a.toString(), rightVal: b.toString() };
-        }), failedValues);
+        }));
 
     if (!chosen) {
-        console.log('❌ Aucun domino choisi.');
-        return { status: 'skipped' };
+        console.log('❌ Aucun domino choisi par l\'expert.');
+        return 'skipped';
     }
 
     console.log(`🎯 Choix expert : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // Double-clic avec recherche par valeur (plus fiable)
-    let clicked = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // Double-clic sécurisé
+    let success = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
         const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
             const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
             for (const d of dominos) {
@@ -401,75 +385,52 @@ async function playTurn(page, previousHandCount, failedValues) {
             return null;
         }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
 
-        if (!dominoElement) {
-            console.log(`⚠️ Tentative ${attempt + 1} : domino introuvable.`);
-            await delay(500);
-            continue;
-        }
-
+        if (!dominoElement) { console.log(`⚠️ Tentative ${attempt + 1} : domino introuvable.`); await delay(300); continue; }
         const box = await dominoElement.boundingBox();
-        if (!box) {
-            console.log(`⚠️ Tentative ${attempt + 1} : boundingBox null.`);
-            await delay(500);
-            continue;
-        }
+        if (!box) { console.log(`⚠️ Tentative ${attempt + 1} : boundingBox null.`); await delay(300); continue; }
 
-        // Clic unique avec vérification, puis deuxième clic
-        const x = box.x + box.width / 2;
-        const y = box.y + box.height / 2;
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
         await page.mouse.click(x, y);
-        await delay(300);
-        // Vérifier que le domino est bien sélectionné (a changé de classe)
-        const selected = await page.evaluate(({ leftVal, rightVal }) => {
-            const dominos = document.querySelectorAll('.mx_2.domino');
-            for (const d of dominos) {
-                const left = d.querySelector('.domino_left'), right = d.querySelector('.domino_right');
-                const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
-                const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
-                if (lv === leftVal && rv === rightVal) {
-                    return d.classList.contains('selected') || d.classList.contains('active') || d.getAttribute('aria-selected') === 'true';
-                }
-            }
-            return false;
-        }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
-        
-        if (!selected) {
-            // Réessayer avec un double-clic plus rapide
-            await page.mouse.click(x, y);
-            await delay(100);
-            await page.mouse.click(x, y);
-        }
-        clicked = true;
+        await delay(200);
+        await page.mouse.click(x, y);
+        success = true;
         break;
     }
 
-    if (!clicked) {
-        console.log('❌ Impossible de cliquer sur le domino après 5 tentatives.');
-        return { status: 'failed', failedValue: chosen.value };
-    }
+    if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return 'failed'; }
 
-    await delay(500);
     const jouerBtn = await findButtonByText(page, 'Jouer');
-    if (jouerBtn) {
-        await jouerBtn.click();
-        console.log('🖱️ Jouer');
-    } else {
-        await page.keyboard.press('Enter');
-        console.log('⏎ Entrée');
-    }
+    if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
+    else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
 
-    await delay(2000);
+    await delay(1500);
     const newHandCount = await page.evaluate(() => {
         const board = document.querySelectorAll('.domino_board .domino');
         return document.querySelectorAll('.domino').length - board.length;
     });
+
     if (newHandCount >= previousHandCount) {
         console.log('⚠️ Le coup semble avoir échoué (main inchangée).');
-        return { status: 'failed', failedValue: chosen.value };
+        return 'failed';
     }
 
     console.log('✅ Coup joué avec succès.');
-    return { status: 'played' };
+    return 'played';
+}
+
+// ============================================================
+// DÉTECTION DES PASSES ADVERSES
+// ============================================================
+async function detectOpponentPass(page, previousBoardEnds) {
+    const currentEnds = await getBoardEnds(page);
+    if (currentEnds && previousBoardEnds &&
+        currentEnds.left === previousBoardEnds.left &&
+        currentEnds.right === previousBoardEnds.right) {
+        opponentPassedValues.add(parseInt(currentEnds.left));
+        opponentPassedValues.add(parseInt(currentEnds.right));
+        console.log(`🧠 Adversaire a passé/poché sur ${currentEnds.left} et ${currentEnds.right}`);
+    }
+    return currentEnds;
 }
 
 // ============================================================
@@ -497,7 +458,7 @@ async function isRoundOver(page) {
 async function isMatchOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
-        if (/a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final|victoire !|défaite !|match gagné|match perdu|vous remportez|vous perdez/i.test(bodyText)) return true;
+        if (/a remporté le match|match terminé|vous avez gagné|vous avez perdu|score final|victoire !|défaite !|match gagné|match perdu/i.test(bodyText)) return true;
         const buttons = [...document.querySelectorAll('button')];
         for (const btn of buttons) {
             const txt = btn.textContent.trim().toLowerCase();
@@ -508,13 +469,13 @@ async function isMatchOver(page) {
 }
 
 // ============================================================
-// ATTENTE COMBINÉE
+// ATTENTE DU TOUR
 // ============================================================
-async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
+async function waitForMyTurn(page, timeout = 28000) {
     console.log('⏳ Attente de mon tour...');
     const start = Date.now();
     while (Date.now() - start < timeout) {
-        await killChromePopups(page);
+        await handleChromeDialog(page);
         if (await isRoundOver(page)) { console.log('🏁 Fin de manche détectée pendant l\'attente.'); return 'round_over'; }
         const board = await page.$('.domino_board');
         if (!board) { await delay(1000); continue; }
@@ -530,7 +491,7 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
 }
 
 // ============================================================
-// JOUER UNE MANCHE
+// JOUER UNE MANCHE (EXPERT)
 // ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (mode EXPERT)`);
@@ -538,13 +499,12 @@ async function playOneRound(page, roundNumber) {
     playedDominoes.clear();
     opponentPassedValues.clear();
     let turn = 1, consecutiveMisses = 0;
-    let failedValues = new Set();
     let previousEnds = null;
 
     while (true) {
         const board = await page.$('.domino_board');
         if (!board) {
-            console.log('⚠️ Plateau disparu, attente de la transition...');
+            console.log('⚠️ Plateau disparu, attente...');
             const start = Date.now();
             while (Date.now() - start < 30000) {
                 if (await isRoundOver(page)) { console.log('🏁 Fin de manche confirmée.'); break; }
@@ -556,7 +516,7 @@ async function playOneRound(page, roundNumber) {
             continue;
         }
 
-        const waitResult = await waitForMyTurnOrRoundEnd(page);
+        const waitResult = await waitForMyTurn(page);
         if (waitResult === 'round_over') break;
         if (waitResult === 'timeout') {
             consecutiveMisses++;
@@ -566,19 +526,17 @@ async function playOneRound(page, roundNumber) {
         consecutiveMisses = 0;
         if (await isRoundOver(page)) break;
 
+        // Détecter si l'adversaire a passé
+        if (previousEnds) await detectOpponentPass(page, previousEnds);
+
         const fullHand = await getFullHand(page);
         console.log(`🃏 Main complète (tour ${turn}, ${fullHand.length} dominos) :`);
         fullHand.forEach(d => console.log(`   ${d.playable ? '✔️' : '✖️'} ${d.value}`));
 
         const handSizeBefore = fullHand.length;
-        const result = await playTurn(page, handSizeBefore, failedValues);
+        await playTurn(page, handSizeBefore);
 
-        if (result.status === 'failed') {
-            if (result.failedValue) failedValues.add(result.failedValue);
-            if (failedValues.size >= 3) failedValues.clear();
-        } else {
-            failedValues.clear();
-        }
+        previousEnds = await getBoardEnds(page);
 
         if (await isRoundOver(page)) break;
         if (await isMatchOver(page)) return 'match_over';
@@ -600,40 +558,16 @@ async function playOneRound(page, roundNumber) {
         const { browser: br, page } = await connect({
             headless: false,
             turnstile: false,
-            args: [
-                '--no-sandbox',
-                '--disable-save-password-bubble',
-                '--disable-features=PasswordManager,TranslateUI,AutofillAssistant',
-                '--disable-notifications',
-                '--disable-popup-blocking',
-                '--disable-infobars',
-                '--no-first-run',
-                '--disable-default-apps',
-                '--disable-sync',
-                '--disable-translate',
-                '--disable-extensions',
-                '--disable-background-networking',
-                '--disable-client-side-phishing-detection',
-                '--disable-component-update',
-                '--disable-domain-reliability',
-                '--disable-print-preview',
-                '--disable-speech-api',
-                '--disable-web-security',
-                '--display=:99'
-            ]
+            args: ['--no-sandbox', '--disable-save-password-bubble', '--display=:99']
         });
         browser = br;
-        
-        // Injection anti-popup avant toute navigation
-        await injectPopupKiller(page);
-        
         await page.setViewport({ width: 1280, height: 720 });
 
         // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
-        await killChromePopups(page);
+        await handleChromeDialog(page);
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await page.keyboard.press('Enter');
@@ -643,7 +577,7 @@ async function playOneRound(page, roundNumber) {
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
-        await killChromePopups(page);
+        await handleChromeDialog(page);
         const jouerLink = await page.evaluateHandle(() => {
             const links = [...document.querySelectorAll('a')];
             return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
