@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (EXPERT - basé sur la version qui marche)
+// goodloka-bot.js – Bot de domino GoodLoka (EXPERT FINAL - Node detached corrigé)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -40,7 +40,9 @@ function stopRecording() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Utilitaires DOM ---
+// ============================================================
+// UTILITAIRES DOM
+// ============================================================
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -87,7 +89,9 @@ async function killChromePopups(page) {
     });
 }
 
-// --- Lecture du jeu (IDENTIQUE à la version qui marche) ---
+// ============================================================
+// LECTURE DU JEU
+// ============================================================
 async function getBoardEnds(page) {
     return await page.evaluate(() => {
         const els = document.querySelectorAll('.domino_board .domino');
@@ -128,9 +132,11 @@ async function getFullHand(page) {
     });
 }
 
-// --- Suivi des dominos joués ---
+// ============================================================
+// SUIVI EXPERT
+// ============================================================
 let playedDominoes = new Set();
-let opponentPassedValues = new Set(); // NOUVEAU : mémoire des passes
+let opponentPassedValues = new Set();
 
 function normalize(v1, v2) {
     const a = parseInt(v1), b = parseInt(v2);
@@ -150,7 +156,9 @@ async function updatePlayedDominoes(page) {
     dominoes.forEach(d => { if (d.left !== '?' && d.right !== '?') playedDominoes.add(normalize(d.left, d.right)); });
 }
 
-// --- STRATÉGIE EXPERT (ajoutée à la version qui marche) ---
+// ============================================================
+// STRATÉGIE EXPERT
+// ============================================================
 function allDominoes() {
     const all = [];
     for (let i = 0; i <= 6; i++) for (let j = i; j <= 6; j++) all.push({ left: i, right: j, value: `${i}:${j}` });
@@ -296,7 +304,9 @@ function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, my
     return best || validHand[0];
 }
 
-// --- Jouer un tour (UTILISE LE MÊME DOUBLE-CLIC QUE LA VERSION QUI MARCHE) ---
+// ============================================================
+// JOUER UN TOUR (NODE DETACHED CORRIGÉ)
+// ============================================================
 async function playTurn(page, previousHandCount) {
     await updatePlayedDominoes(page);
     await killChromePopups(page);
@@ -329,28 +339,66 @@ async function playTurn(page, previousHandCount) {
     if (!chosen) { console.log('❌ Aucun domino choisi.'); return 'skipped'; }
     console.log(`🎯 Choix expert : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // 🔥 DOUBLE-CLIC IDENTIQUE À LA VERSION QUI MARCHE (utilise les handles)
-    const handHandles = await page.$$('.mx_2.domino.cursor_pointer');
+    // 🔥 DOUBLE-CLIC AVEC RE-SÉLECTION À CHAQUE TENTATIVE (Node detached proof)
     let clicked = false;
-    for (const h of handHandles) {
-        const info = await h.evaluate(el => {
-            const left = el.querySelector('.domino_left'), right = el.querySelector('.domino_right');
-            const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
-            const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
-            return `${lv}:${rv}`;
-        });
-        if (info === chosen.value) {
-            await h.click();
-            await delay(200);
-            await h.click();
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const freshHandles = await page.$$('.mx_2.domino.cursor_pointer');
+        let found = false;
+        
+        for (const h of freshHandles) {
+            try {
+                const info = await h.evaluate(el => {
+                    const left = el.querySelector('.domino_left'), right = el.querySelector('.domino_right');
+                    const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
+                    const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+                    return `${lv}:${rv}`;
+                });
+                
+                if (info === chosen.value) {
+                    await h.click();
+                    await delay(150);
+                    await h.click();
+                    clicked = true;
+                    found = true;
+                    break;
+                }
+            } catch (e) {
+                // Handle invalide, on passe au suivant
+            }
+        }
+        
+        if (found) break;
+        await delay(200);
+    }
+
+    // Fallback coordonnées si les handles échouent
+    if (!clicked) {
+        console.log('⚠️ Fallback coordonnées...');
+        const box = await page.evaluate(({ leftVal, rightVal }) => {
+            const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
+            for (const d of dominos) {
+                const left = d.querySelector('.domino_left'), right = d.querySelector('.domino_right');
+                const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
+                const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
+                if (lv === leftVal && rv === rightVal) {
+                    const r = d.getBoundingClientRect();
+                    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                }
+            }
+            return null;
+        }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
+        
+        if (box) {
+            await page.mouse.click(box.x, box.y);
+            await delay(150);
+            await page.mouse.click(box.x, box.y);
             clicked = true;
-            break;
         }
     }
 
     if (!clicked) { console.log('❌ Impossible de cliquer sur le domino.'); return 'failed'; }
 
-    // 🔥 BOUTON JOUER IDENTIQUE À LA VERSION QUI MARCHE
+    // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) {
         await jouerBtn.click();
@@ -364,7 +412,9 @@ async function playTurn(page, previousHandCount) {
     return 'played';
 }
 
-// --- Détection des passes adverses (NOUVEAU) ---
+// ============================================================
+// DÉTECTION DES PASSES ADVERSES
+// ============================================================
 async function detectOpponentPass(page, previousBoardEnds) {
     const currentEnds = await getBoardEnds(page);
     if (currentEnds && previousBoardEnds &&
@@ -377,7 +427,9 @@ async function detectOpponentPass(page, previousBoardEnds) {
     return currentEnds;
 }
 
-// --- Détection fins (IDENTIQUE) ---
+// ============================================================
+// DÉTECTION FINS
+// ============================================================
 async function isRoundOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -410,6 +462,9 @@ async function isMatchOver(page) {
     });
 }
 
+// ============================================================
+// ATTENTE DU TOUR
+// ============================================================
 async function waitForMyTurnOrRoundEnd(page, timeout = 20000) {
     console.log('⏳ Attente de mon tour...');
     const start = Date.now();
@@ -429,7 +484,9 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 20000) {
     return 'timeout';
 }
 
-// --- Jouer une manche (EXPERT) ---
+// ============================================================
+// JOUER UNE MANCHE (EXPERT)
+// ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (EXPERT)`);
     await delay(2000);
@@ -484,17 +541,20 @@ async function playOneRound(page, roundNumber) {
     return 'round_over';
 }
 
-// --- Main (IDENTIQUE) ---
+// ============================================================
+// MAIN
+// ============================================================
 (async () => {
     let browser;
     try {
         const { browser: br, page } = await connect({
             headless: false, turnstile: false,
-            args: ['--no-sandbox', '--disable-save-password-bubble', '--disable-features=PasswordManager,TranslateUI', '--disable-notifications', '--disable-popup-blocking', '--disable-infobars', '--no-first-run', '--disable-default-apps', '--disable-sync', '--disable-translate', '--disable-extensions', '--display=:99']
+            args: ['--no-sandbox', '--disable-save-password-bubble', '--display=:99']
         });
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
+        // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
@@ -503,6 +563,7 @@ async function playOneRound(page, roundNumber) {
         await page.keyboard.press('Enter');
         await delay(5000);
 
+        // 2. Domino
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
@@ -518,6 +579,7 @@ async function playOneRound(page, roundNumber) {
         }
         await delay(5000);
 
+        // 3. Création partie
         const createBtn = await findButtonByText(page, 'Créer une partie');
         if (createBtn) await createBtn.click();
         await delay(3000);
@@ -538,6 +600,7 @@ async function playOneRound(page, roundNumber) {
         (await findButtonByText(page, 'Créer la partie'))?.click();
         await delay(3000);
 
+        // 4. Attente adversaire
         console.log('⏳ Attente adversaire pour la première manche...');
         const startWait = Date.now();
         while (Date.now() - startWait < waitTimeout) {
@@ -548,6 +611,7 @@ async function playOneRound(page, roundNumber) {
         await delay(2000);
         startRecording();
 
+        // 5. Boucle des manches
         let roundNumber = 1;
         while (true) {
             const result = await playOneRound(page, roundNumber);
