@@ -4,27 +4,44 @@ on:
   workflow_dispatch:
     inputs:
       phone:
+        description: 'Numéro de téléphone (indicatif + chiffres)'
         required: true
       password:
+        description: 'Mot de passe GoodLoka'
         required: true
       score:
+        description: 'Score cible (ex: 50)'
         default: '50'
+        required: false
       mise:
+        description: 'Mise (ex: 200)'
         default: '200'
+        required: false
       joueurs:
+        description: 'Nombre de joueurs (2, 3 ou 4)'
         default: '2'
+        required: false
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30   # ⬅️ augmente si les parties sont longues
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm install puppeteer-real-browser
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+
+      - name: Installer puppeteer-real-browser
+        run: npm install puppeteer-real-browser
+
+      - name: Installer Xvfb (serveur d'affichage virtuel)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+
       - name: Lancer le bot
         env:
           PHONE: ${{ github.event.inputs.phone }}
@@ -37,7 +54,9 @@ jobs:
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
           node goodloka-bot.js
-      - uses: actions/upload-artifact@v4
+
+      - name: Uploader les captures d'écran (artefacts)
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: game-screenshots
