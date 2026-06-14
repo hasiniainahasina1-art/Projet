@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (version complète)
+// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (version avec attente prolongée)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -79,7 +79,7 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Vérifier la présence d'un bouton de jeu (Jouer, Piocher, Passer) ---
+// --- Vérifier la présence d'un bouton de jeu ---
 async function hasGameButton(page) {
     return await page.evaluate(() => {
         const buttons = [...document.querySelectorAll('button')];
@@ -90,43 +90,53 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Inspection améliorée des dominos adverses ---
+// --- Inspection améliorée avec attente des données ---
 async function inspectOpponentDominoes(page) {
     console.log('🕵️ Analyse des dominos de l\'adversaire...');
 
-    // Attendre que les demi-parties soient visibles (max 15 secondes)
-    try {
-        await page.waitForSelector('.opponent_dominoes .o_domino .domino_left', { visible: true, timeout: 15000 });
-        console.log('✅ Demi-parties visibles');
-    } catch (e) {
-        console.log('⚠️ Les demi-parties ne sont pas devenues visibles, on tente quand même...');
+    // Attendre jusqu'à 30 secondes que les dominos contiennent quelque chose
+    const start = Date.now();
+    let hasContent = false;
+    while (Date.now() - start < 30000) {
+        const emptyCount = await page.$$eval('.opponent_dominoes .o_domino', els =>
+            els.filter(el => el.innerHTML.trim() === '').length
+        );
+        if (emptyCount === 0) {
+            hasContent = true;
+            break;
+        }
+        console.log(`⏳ ${emptyCount} dominos encore vides, attente...`);
+        await delay(3000);
     }
 
-    await delay(3000);
+    if (!hasContent) {
+        console.log('⚠️ Les dominos adverses semblent vides ou masqués (face cachée).');
+        // Tenter de capturer l'état actuel et afficher le HTML pour diagnostic
+        const sampleHTML = await page.$eval('.opponent_dominoes .o_domino', el => el.outerHTML);
+        console.log('   HTML d\'un domino adverse :', sampleHTML.substring(0, 300));
+    }
+
     await page.screenshot({ path: path.join(screenshotsDir, 'opponent_dominoes.png'), fullPage: true });
 
+    // Lecture des dominos
     const opponentDominoes = await page.$$eval('.opponent_dominoes .o_domino', els =>
         els.map((el, index) => {
             const left = el.querySelector('.domino_left');
             const right = el.querySelector('.domino_right');
-
-            // Lire data-value via dataset ou attribut
             const leftVal = left ? (left.dataset?.value || left.getAttribute('data-value')) : null;
             const rightVal = right ? (right.dataset?.value || right.getAttribute('data-value')) : null;
-
-            // Fallback sur le texte contenu
             const leftText = left ? left.textContent.trim() : '';
             const rightText = right ? right.textContent.trim() : '';
 
-            let text = 'inconnu';
+            let text = 'inconnu (peut-être face cachée)';
             if (leftVal && rightVal) {
                 text = `${leftVal}:${rightVal}`;
             } else if (leftText && rightText) {
                 text = `${leftText}:${rightText}`;
+            } else if (el.innerHTML.trim() === '') {
+                text = 'vide (face cachée ou non distribué)';
             } else {
-                // Dernier recours : afficher un extrait HTML pour diagnostic
-                const html = el.innerHTML.substring(0, 100);
-                text = `HTML: ${html}`;
+                text = `HTML: ${el.innerHTML.substring(0, 50)}`;
             }
 
             return {
@@ -139,7 +149,7 @@ async function inspectOpponentDominoes(page) {
         })
     );
 
-    console.log(`🎴 ${opponentDominoes.length} dominos adverses trouvés :`);
+    console.log(`🎴 ${opponentDominoes.length} dominos adverses :`);
     opponentDominoes.forEach(d => {
         console.log(`   ${d.index}. ${d.text} (visible: ${d.visible})`);
     });
@@ -202,8 +212,6 @@ async function inspectOpponentDominoes(page) {
         await delay(3000);
 
         // 4. Sélectionner les options
-
-        // Mode Classique
         const modeBtns = await page.$$('button.mode-pill');
         if (modeBtns.length >= 1) {
             let classiqueBtn = null;
@@ -220,7 +228,6 @@ async function inspectOpponentDominoes(page) {
         }
         await delay(1000);
 
-        // Score
         const scoreBtn = await findButtonByText(page, desiredScore);
         if (scoreBtn) {
             await scoreBtn.click();
@@ -228,7 +235,6 @@ async function inspectOpponentDominoes(page) {
         }
         await delay(500);
 
-        // Mise
         const miseBtn = await findButtonByText(page, desiredMise);
         if (miseBtn) {
             await miseBtn.click();
@@ -236,7 +242,6 @@ async function inspectOpponentDominoes(page) {
         }
         await delay(500);
 
-        // Nombre de joueurs
         const joueursBtn = await findButtonByText(page, `${desiredJoueurs} joueurs`);
         if (joueursBtn) {
             await joueursBtn.click();
@@ -244,7 +249,6 @@ async function inspectOpponentDominoes(page) {
         }
         await delay(500);
 
-        // Désactiver les conditions
         const allButtons = await page.$$('button');
         for (const btn of allButtons) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
@@ -286,7 +290,7 @@ async function inspectOpponentDominoes(page) {
         }
 
         if (gameStarted) {
-            // 🎯 Extraire les dominos adverses avec la nouvelle fonction améliorée
+            // 🎯 Inspection avec attente prolongée
             await inspectOpponentDominoes(page);
         } else {
             console.log('⚠️ Aucun adversaire après 5 minutes.');
