@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de jeu de dominos GoodLoka (version améliorée)
+// goodloka-bot.js – Bot de jeu de dominos GoodLoka (correction Node detached + stratégie premier coup)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -20,7 +20,7 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Remplissage humain d’un champ ---
+// --- Remplissage humain ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -43,7 +43,7 @@ async function fillFieldHuman(page, selector, value, fieldName) {
     await delay(200 + Math.random() * 300);
 }
 
-// --- Clic humain avec trajectoire courbe ---
+// --- Clic humain avec trajectoire ---
 async function humanClickAt(page, coords) {
     const start = await page.evaluate(() => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 }));
     const steps = 20;
@@ -58,7 +58,7 @@ async function humanClickAt(page, coords) {
     await page.mouse.click(coords.x, coords.y);
 }
 
-// --- Trouver un bouton par son texte exact ---
+// --- Trouver un bouton par texte ---
 async function findButtonByText(page, text) {
     const btns = await page.$$('button');
     for (const btn of btns) {
@@ -68,7 +68,7 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Récupération des extrémités du plateau ---
+// --- Récupération des extrémités ---
 async function getBoardEnds(page) {
     return await page.evaluate(() => {
         const els = document.querySelectorAll('.domino_board .domino');
@@ -84,7 +84,7 @@ async function getBoardEnds(page) {
     });
 }
 
-// --- Récupération des dominos jouables (avec pointeurs) ---
+// --- Récupération des dominos jouables ---
 async function getPlayableDominoes(page) {
     const handles = await page.$$('.mx_2.domino.cursor_pointer');
     const dominoes = [];
@@ -106,7 +106,7 @@ async function getPlayableDominoes(page) {
     return dominoes;
 }
 
-// --- Récupération de TOUTE la main (jouable ou non) ---
+// --- Récupération de TOUTE la main ---
 async function getFullHand(page) {
     return await page.evaluate(() => {
         const boardDominoes = [...document.querySelectorAll('.domino_board .domino')];
@@ -128,26 +128,32 @@ async function getFullHand(page) {
     });
 }
 
-// --- Choix du meilleur domino (inchangé) ---
+// --- Choix du meilleur domino ---
 function chooseBestDomino(hand, ends) {
-    if (!ends || hand.length === 0) return hand[0];
+    if (!ends) {
+        // Premier coup : plus gros double, sinon plus lourd
+        const doubles = hand.filter(d => d.leftVal === d.rightVal);
+        if (doubles.length > 0) {
+            doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal));
+            return doubles[0];
+        }
+        hand.sort((a, b) => (parseInt(b.leftVal) + parseInt(b.rightVal)) - (parseInt(a.leftVal) + parseInt(a.rightVal)));
+        return hand[0];
+    }
     const { left, right } = ends;
-    // Double parfait
     for (const d of hand) {
         if ((d.leftVal === left && d.rightVal === right) || (d.leftVal === right && d.rightVal === left)) return d;
     }
-    // Doubles correspondants
     for (const d of hand) {
         if (d.leftVal === d.rightVal && (d.leftVal === left || d.leftVal === right)) return d;
     }
-    // Premier qui correspond
     for (const d of hand) {
         if (d.leftVal === left || d.rightVal === left || d.leftVal === right || d.rightVal === right) return d;
     }
     return hand[0];
 }
 
-// --- Jouer un tour (appelé uniquement quand c’est notre tour) ---
+// --- Jouer un tour (avec re-sélection du domino) ---
 async function playTurn(page) {
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
@@ -156,19 +162,32 @@ async function playTurn(page) {
 
     if (hand.length === 0) {
         console.log('🤷 Aucun domino jouable, le site va sauter automatiquement.');
-        // Ne rien faire : le site passe le tour automatiquement si aucun domino n’est jouable
         return;
     }
 
     const chosen = chooseBestDomino(hand, ends);
-    console.log(`🎯 Choix : ${chosen.value}`);
+    console.log(`🎯 Choix : ${chosen.value} (index ${chosen.index})`);
 
-    // Double‑clic sur le domino
-    await chosen.handle.click();
+    let dominoHandle = null;
+    if (chosen.index !== undefined) {
+        const dominoSelector = `.mx_2.domino.cursor_pointer[data-index="${chosen.index}"]`;
+        dominoHandle = await page.$(dominoSelector);
+    }
+    if (!dominoHandle) {
+        const refreshedHand = await getPlayableDominoes(page);
+        const found = refreshedHand.find(d => d.value === chosen.value);
+        if (found) {
+            dominoHandle = found.handle;
+        } else {
+            console.log('❌ Impossible de retrouver le domino choisi.');
+            return;
+        }
+    }
+
+    await dominoHandle.click();
     await delay(200);
-    await chosen.handle.click();
+    await dominoHandle.click();
 
-    // Valider le coup
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) {
         await jouerBtn.click();
@@ -180,18 +199,14 @@ async function playTurn(page) {
     await delay(2000);
 }
 
-// --- Attente active de son tour (basée sur un message texte) ---
+// --- Attente active de son tour ---
 async function waitForMyTurn(page, timeout = 28000) {
     console.log('⏳ Attente de mon tour...');
     const start = Date.now();
     while (Date.now() - start < timeout) {
         const element = await page.evaluate(() => {
-            // Recherche du message "c'est votre tour" ou "à vous de jouer" (insensible à la casse)
             const bodyText = document.body.innerText;
-            if (/c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText)) {
-                return true;
-            }
-            return false;
+            return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
         });
         if (element) {
             console.log('🔔 C’est mon tour !');
@@ -203,32 +218,27 @@ async function waitForMyTurn(page, timeout = 28000) {
     return false;
 }
 
-// --- Boucle de jeu améliorée ---
+// --- Boucle de jeu ---
 async function gameLoop(page, maxTurns = 100) {
     for (let turn = 0; turn < maxTurns; turn++) {
-        // Attendre que ce soit notre tour (ou timeout -> pénalité possible)
         const myTurn = await waitForMyTurn(page);
         if (!myTurn) {
             console.log('⏰ Tour manqué. Passage au suivant...');
             continue;
         }
 
-        // Afficher toute la main (jouable ou non)
         const fullHand = await getFullHand(page);
         console.log(`🃏 Main complète (tour ${turn + 1}, ${fullHand.length} dominos) :`);
         fullHand.forEach(d => console.log(`   ${d.playable ? '✔️' : '✖️'} ${d.value}`));
 
-        // Jouer le tour (si aucun domino jouable, le site saute automatiquement)
         await playTurn(page);
 
-        // Vérifier la fin de partie
         const board = await page.$('.domino_board');
         if (!board) {
             console.log('🏁 Partie terminée');
             break;
         }
 
-        // Pause avant l’attente du prochain tour
         await delay(2000);
     }
 }
@@ -275,7 +285,6 @@ async function gameLoop(page, maxTurns = 100) {
         if (createBtn) await createBtn.click();
         await delay(3000);
 
-        // Mode Classique
         const modeBtns = await page.$$('button.mode-pill');
         for (const b of modeBtns) {
             if ((await page.evaluate(el => el.textContent.trim(), b)).includes('Classique')) {
@@ -290,7 +299,6 @@ async function gameLoop(page, maxTurns = 100) {
         await delay(500);
         (await findButtonByText(page, `${desiredJoueurs} joueurs`))?.click();
         await delay(500);
-        // Désactiver les conditions spéciales
         const allBtns = await page.$$('button');
         for (const btn of allBtns) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
@@ -303,17 +311,16 @@ async function gameLoop(page, maxTurns = 100) {
         (await findButtonByText(page, 'Créer la partie'))?.click();
         await delay(3000);
 
-        
-        // 4. Attente adversaire (max waitTimeout)
-console.log('⏳ Attente adversaire...');
-const startWait = Date.now();
-while (Date.now() - startWait < waitTimeout) {
-    if ((await page.$('.domino_board')) || (await findButtonByText(page, 'Jouer'))) {
-        console.log('🎮 Partie commencée !');
-        break;
-    }
-    await delay(10000);
-}
+        // 4. Attente adversaire
+        console.log('⏳ Attente adversaire...');
+        const startWait = Date.now();
+        while (Date.now() - startWait < waitTimeout) {
+            if ((await page.$('.domino_board')) || (await findButtonByText(page, 'Jouer'))) {
+                console.log('🎮 Partie commencée !');
+                break;
+            }
+            await delay(10000);
+        }
 
         // 5. Jouer
         await gameLoop(page);
