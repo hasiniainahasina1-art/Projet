@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – version avec extraction du plateau et de la main
+// goodloka-create-and-wait.js – version corrigée (analyse du plateau et de la main)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -89,16 +89,7 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Extraire les valeurs d'un domino à partir de ses demi-parties ---
-function getDominoValue(domEl) {
-    const left = domEl.querySelector('.domino_left');
-    const right = domEl.querySelector('.domino_right');
-    const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
-    const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
-    return `${lv}:${rv}`;
-}
-
-// --- Analyse complète de l'état du jeu ---
+// --- Analyse de l'état du jeu (plateau + main) ---
 async function analyzeGameState(page) {
     console.log('🔍 Analyse de l\'état du jeu...');
     await delay(3000);
@@ -106,20 +97,34 @@ async function analyzeGameState(page) {
 
     // Dominos sur le plateau
     const boardDominoes = await page.$$eval('.domino_board .domino', els =>
-        els.map(el => ({
-            value: getDominoValue(el),
-            pos: el.getBoundingClientRect()
-        }))
+        els.map(el => {
+            const left = el.querySelector('.domino_left');
+            const right = el.querySelector('.domino_right');
+            const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
+            const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+            const rect = el.getBoundingClientRect();
+            return {
+                value: `${lv}:${rv}`,
+                x: Math.round(rect.x),
+                y: Math.round(rect.y)
+            };
+        })
     );
     console.log(`🎲 Plateau : ${boardDominoes.length} dominos`);
-    boardDominoes.forEach(d => console.log(`   ${d.value} (x=${Math.round(d.pos.x)}, y=${Math.round(d.pos.y)})`));
+    boardDominoes.forEach(d => console.log(`   ${d.value} (x=${d.x}, y=${d.y})`));
 
     // Votre main (dominos cliquables)
     const handDominoes = await page.$$eval('.mx_2.domino.cursor_pointer', els =>
-        els.map(el => ({
-            value: getDominoValue(el),
-            index: el.getAttribute('data-index')
-        }))
+        els.map(el => {
+            const left = el.querySelector('.domino_left');
+            const right = el.querySelector('.domino_right');
+            const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
+            const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+            return {
+                value: `${lv}:${rv}`,
+                index: el.getAttribute('data-index')
+            };
+        })
     );
     console.log(`🖐️ Votre main : ${handDominoes.length} dominos`);
     handDominoes.forEach(d => console.log(`   ${d.value} (index ${d.index})`));
@@ -197,7 +202,6 @@ async function analyzeGameState(page) {
         }
         await delay(1000);
 
-        // Score, Mise, Joueurs
         const scoreBtn = await findButtonByText(page, desiredScore);
         if (scoreBtn) { await scoreBtn.click(); console.log(`✅ Score ${desiredScore}`); }
         await delay(500);
@@ -208,7 +212,7 @@ async function analyzeGameState(page) {
         if (joueursBtn) { await joueursBtn.click(); console.log(`✅ ${desiredJoueurs} joueurs`); }
         await delay(500);
 
-        // Conditions off
+        // Désactiver conditions
         const allBtns = await page.$$('button');
         for (const btn of allBtns) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
@@ -221,7 +225,6 @@ async function analyzeGameState(page) {
         }
         console.log('✅ Conditions désactivées');
 
-        // Créer
         const createFinal = await findButtonByText(page, 'Créer la partie');
         if (createFinal) await createFinal.click();
         else throw new Error('Bouton final introuvable');
