@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – version avec extraction des dominos adverses
+// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (version complète)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const password = process.env.PASSWORD;
 const desiredScore = process.env.SCORE || '50';
 const desiredMise  = process.env.MISE || '200';
 const desiredJoueurs = process.env.JOUEURS || '2';
-const waitTimeout = 5 * 60 * 1000;
+const waitTimeout = 5 * 60 * 1000; // 5 minutes
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
@@ -79,7 +79,7 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Vérifier la présence d'un bouton de jeu ---
+// --- Vérifier la présence d'un bouton de jeu (Jouer, Piocher, Passer) ---
 async function hasGameButton(page) {
     return await page.evaluate(() => {
         const buttons = [...document.querySelectorAll('button')];
@@ -90,31 +90,58 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Extraction des dominos adverses ---
+// --- Inspection améliorée des dominos adverses ---
 async function inspectOpponentDominoes(page) {
     console.log('🕵️ Analyse des dominos de l\'adversaire...');
-    await delay(5000);
+
+    // Attendre que les demi-parties soient visibles (max 15 secondes)
+    try {
+        await page.waitForSelector('.opponent_dominoes .o_domino .domino_left', { visible: true, timeout: 15000 });
+        console.log('✅ Demi-parties visibles');
+    } catch (e) {
+        console.log('⚠️ Les demi-parties ne sont pas devenues visibles, on tente quand même...');
+    }
+
+    await delay(3000);
     await page.screenshot({ path: path.join(screenshotsDir, 'opponent_dominoes.png'), fullPage: true });
 
     const opponentDominoes = await page.$$eval('.opponent_dominoes .o_domino', els =>
-        els.map(el => {
-            // Récupérer les valeurs depuis les data-value des demis
+        els.map((el, index) => {
             const left = el.querySelector('.domino_left');
             const right = el.querySelector('.domino_right');
-            const leftVal = left ? (left.dataset.value || left.getAttribute('data-value')) : null;
-            const rightVal = right ? (right.dataset.value || right.getAttribute('data-value')) : null;
+
+            // Lire data-value via dataset ou attribut
+            const leftVal = left ? (left.dataset?.value || left.getAttribute('data-value')) : null;
+            const rightVal = right ? (right.dataset?.value || right.getAttribute('data-value')) : null;
+
+            // Fallback sur le texte contenu
+            const leftText = left ? left.textContent.trim() : '';
+            const rightText = right ? right.textContent.trim() : '';
+
+            let text = 'inconnu';
+            if (leftVal && rightVal) {
+                text = `${leftVal}:${rightVal}`;
+            } else if (leftText && rightText) {
+                text = `${leftText}:${rightText}`;
+            } else {
+                // Dernier recours : afficher un extrait HTML pour diagnostic
+                const html = el.innerHTML.substring(0, 100);
+                text = `HTML: ${html}`;
+            }
+
             return {
-                left: leftVal,
-                right: rightVal,
-                text: leftVal && rightVal ? `${leftVal}:${rightVal}` : 'inconnu',
+                index: index + 1,
+                text,
+                leftVal: leftVal || leftText || '?',
+                rightVal: rightVal || rightText || '?',
                 visible: el.offsetParent !== null
             };
         })
     );
 
     console.log(`🎴 ${opponentDominoes.length} dominos adverses trouvés :`);
-    opponentDominoes.forEach((d, i) => {
-        console.log(`   ${i+1}. ${d.text} (visible: ${d.visible})`);
+    opponentDominoes.forEach(d => {
+        console.log(`   ${d.index}. ${d.text} (visible: ${d.visible})`);
     });
     return opponentDominoes;
 }
@@ -240,7 +267,7 @@ async function inspectOpponentDominoes(page) {
         }
         await delay(3000);
 
-        // 6. Attendre un adversaire
+        // 6. Attendre un adversaire (max 5 minutes)
         console.log('⏳ Attente d\'un adversaire (max 5 min)...');
         const startWait = Date.now();
         let gameStarted = false;
@@ -259,7 +286,7 @@ async function inspectOpponentDominoes(page) {
         }
 
         if (gameStarted) {
-            // 🎯 Extraire les dominos adverses
+            // 🎯 Extraire les dominos adverses avec la nouvelle fonction améliorée
             await inspectOpponentDominoes(page);
         } else {
             console.log('⚠️ Aucun adversaire après 5 minutes.');
