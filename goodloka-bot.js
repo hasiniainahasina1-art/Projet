@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (détection popup score + vidéo)
+// goodloka-bot.js – Bot de domino GoodLoka (correction faux positifs fin de manche)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -314,7 +314,6 @@ async function playTurn(page, previousHandCount) {
         console.log('⏎ Entrée');
     }
 
-    // Vérifier que le coup a bien été pris
     await delay(1500);
     const newHandCount = await page.evaluate(() => {
         const board = document.querySelectorAll('.domino_board .domino');
@@ -350,20 +349,29 @@ async function waitForMyTurn(page, timeout = 28000) {
     return false;
 }
 
-// --- Détection de fin de manche (popup score même avec plateau plein) ---
+// --- Détection de fin de manche (corrigée) ---
 async function isRoundOver(page) {
     return await page.evaluate(() => {
-        // Détection d'un popup de score / fenêtre flottante
-        if (document.querySelector('.score-board, .results, .modal, .victory, .defeat, [class*="score"], [class*="result"]')) {
-            return true;
+        // Popup de fin visible avec texte explicite
+        const popupSelectors = ['.modal', '.popup', '.overlay', '.victory', '.defeat'];
+        for (const sel of popupSelectors) {
+            const el = document.querySelector(sel);
+            if (el && el.offsetParent !== null) {
+                if (/a gagné|manche terminée|score final|revanche/i.test(el.textContent)) return true;
+            }
         }
-        // Messages textuels de fin
+        // Texte dans la page, mais pas si on voit "c'est votre tour"
         const bodyText = document.body.innerText.toLowerCase();
-        if (/a gagné|manche terminée|score final|revanche/i.test(bodyText)) {
+        if (/a gagné|manche terminée|score final|revanche/i.test(bodyText) &&
+            !/c['’]?est votre tour|à vous de jouer/i.test(bodyText)) {
             return true;
         }
-        // Si le plateau a disparu complètement, c'est fin aussi
-        if (!document.querySelector('.domino_board')) {
+        // Boutons de fin visibles ET plateau absent
+        const buttons = [...document.querySelectorAll('button')];
+        const endTexts = ['rejouer', 'suivant', 'menu', 'quitter'];
+        const hasEndButton = buttons.some(btn => endTexts.some(t => btn.textContent.trim().toLowerCase().includes(t)) && btn.offsetParent !== null);
+        const board = document.querySelector('.domino_board');
+        if (hasEndButton && !board) {
             return true;
         }
         return false;
@@ -381,20 +389,16 @@ async function isMatchOver(page) {
 // --- Jouer une manche complète ---
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber}`);
-    await delay(3000); // Attendre la mise en place
+    await delay(3000);
     playedDominoes.clear();
     let turn = 1;
 
     while (true) {
-        if (await isRoundOver(page)) {
-            console.log('🏁 Fin de manche détectée.');
-            break;
-        }
-
         const board = await page.$('.domino_board');
         if (!board) {
             console.log('⚠️ Plateau disparu, attente...');
             await delay(2000);
+            if (await isRoundOver(page)) break;
             continue;
         }
 
@@ -403,6 +407,12 @@ async function playOneRound(page, roundNumber) {
             console.log('⏰ Tour manqué.');
             await delay(2000);
             continue;
+        }
+
+        // Vérifier fin de manche après avoir obtenu le tour
+        if (await isRoundOver(page)) {
+            console.log('🏁 Fin de manche détectée avant le coup.');
+            break;
         }
 
         const fullHand = await getFullHand(page);
@@ -428,7 +438,6 @@ async function playOneRound(page, roundNumber) {
         await delay(2000);
     }
 
-    // Pause supplémentaire pour laisser le popup disparaître (6s) et le plateau se vider
     console.log('⏳ Attente de 8 secondes pour la transition...');
     await delay(8000);
 }
@@ -444,7 +453,7 @@ async function playOneRound(page, roundNumber) {
                 '--no-sandbox',
                 '--disable-save-password-bubble',
                 '--disable-features=PasswordManager',
-                '--display=:99'   // indispensable pour Xvfb
+                '--display=:99'
             ]
         });
         browser = br;
@@ -517,7 +526,6 @@ async function playOneRound(page, roundNumber) {
             await delay(10000);
         }
 
-        // Démarrer l'enregistrement vidéo
         startRecording();
 
         // 5. Boucle des manches
@@ -530,7 +538,6 @@ async function playOneRound(page, roundNumber) {
                 break;
             }
 
-            // Attendre la nouvelle manche (plateau + "c'est votre tour")
             console.log('⏳ Attente de la prochaine manche...');
             let newRound = false;
             const waitStart = Date.now();
@@ -542,7 +549,6 @@ async function playOneRound(page, roundNumber) {
                     return /c['’]?est votre tour/i.test(bodyText) || /à vous de jouer/i.test(bodyText);
                 });
                 if (board && myTurn) {
-                    // Vérifier que les boutons de fin ne sont plus là
                     const endBtns = await page.evaluate(() => {
                         const endTexts = ['rejouer', 'suivant', 'menu', 'quitter'];
                         return [...document.querySelectorAll('button')].some(btn =>
