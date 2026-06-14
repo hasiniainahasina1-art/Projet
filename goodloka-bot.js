@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (ultra-pro, anti-popup, vidéo parfaite)
+// goodloka-bot.js – Bot de domino GoodLoka (ultra-pro, vidéo, anti-popup)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -10,6 +10,9 @@ const desiredScore = process.env.SCORE || '50';
 const desiredMise  = process.env.MISE || '200';
 const desiredJoueurs = process.env.JOUEURS || '2';
 const waitTimeout = 5 * 60 * 1000;
+
+// Force l'affichage sur le serveur X virtuel
+process.env.DISPLAY = ':99';
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
@@ -29,7 +32,7 @@ function startRecording(filename = 'game_recording.mp4') {
     console.log('🎥 Démarrage de l’enregistrement vidéo...');
     ffmpegProcess = spawn('ffmpeg', [
         '-f', 'x11grab',
-        '-video_size', '1920x1080',
+        '-video_size', '1280x720',   // doit correspondre à la résolution de Xvfb
         '-i', ':99',
         '-codec:v', 'libx264',
         '-preset', 'ultrafast',
@@ -95,13 +98,14 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Supprime les popups Chrome gênants ---
+// --- Nettoyage des popups Chrome ---
 async function killChromePopups(page) {
     await page.evaluate(() => {
-        // Supprime les bulles de mot de passe, traduction, etc.
+        // Supprime les dialogues de mot de passe, traduction, etc.
         const popups = document.querySelectorAll('div[role="dialog"], div[aria-label], .popup, .overlay, .modal');
-        popups.forEach(p => { if (p.offsetParent && !p.classList.contains('domino_board')) p.remove(); });
-        // Cache les infobars
+        popups.forEach(p => {
+            if (p.offsetParent && !p.classList.contains('domino_board')) p.remove();
+        });
         const infobars = document.querySelectorAll('div.infobar, div[class*="infobar"]');
         infobars.forEach(i => i.style.display = 'none');
     });
@@ -165,7 +169,7 @@ async function getFullHand(page) {
     });
 }
 
-// --- Suivi des dominos joués ---
+// --- Suivi des dominos déjà joués ---
 let playedDominoes = new Set();
 
 function normalize(v1, v2) {
@@ -222,7 +226,7 @@ function getLikelyAdversaryValues(unknownSet) {
         freq[a] = (freq[a] || 0) + 1;
         freq[b] = (freq[b] || 0) + 1;
     }
-    const sorted = Object.entries(freq).sort((a,b) => b[1] - a[1]);
+    const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
     return new Set(sorted.slice(0, 2).map(e => e[0]));
 }
 
@@ -269,7 +273,6 @@ function scoreMove(domino, ends, hand, playedSet, unknownSet) {
 }
 
 function chooseBestDomino(hand, ends, playedSet, unknownSet, excludeValues = new Set()) {
-    // Retire les dominos qui ont échoué récemment
     const filteredHand = hand.filter(d => !excludeValues.has(d.value));
     const effectiveHand = filteredHand.length > 0 ? filteredHand : hand;
 
@@ -295,10 +298,10 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, excludeValues = new
     return best || effectiveHand[0];
 }
 
-// --- Jouer un tour avec mémoire des échecs et détection de fin de partie ---
+// --- Jouer un tour avec anti-boucle et exclusion des échecs ---
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
-    await killChromePopups(page);   // nettoie les popups avant de jouer
+    await killChromePopups(page);
 
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
@@ -315,7 +318,6 @@ async function playTurn(page, previousHandCount, failedValues) {
     const chosen = chooseBestDomino(hand, ends, playedDominoes, unknownSet, failedValues);
     console.log(`🎯 Choix : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // Double-clic sécurisé
     let success = false;
     for (let attempt = 0; attempt < 3; attempt++) {
         const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
@@ -367,7 +369,6 @@ async function playTurn(page, previousHandCount, failedValues) {
     }
 
     await delay(1500);
-    // Vérifier si la main a changé
     const newHandCount = await page.evaluate(() => {
         const board = document.querySelectorAll('.domino_board .domino');
         const all = document.querySelectorAll('.domino');
@@ -383,7 +384,7 @@ async function playTurn(page, previousHandCount, failedValues) {
     return { status: 'played' };
 }
 
-// --- Détection de fin de manche (inchangée, mais avec priorité) ---
+// --- Détection de fin de manche ---
 async function isRoundOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -406,7 +407,7 @@ async function isRoundOver(page) {
     });
 }
 
-// --- Détection de fin de match (ajout du bouton "Terminé") ---
+// --- Détection de fin de match (bouton "Terminé") ---
 async function isMatchOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -420,7 +421,7 @@ async function isMatchOver(page) {
     });
 }
 
-// --- Attente combinée (tour + fin de manche) avec nettoyage Chrome ---
+// --- Attente combinée (tour + fin de manche) ---
 async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
     console.log('⏳ Attente de mon tour...');
     const start = Date.now();
@@ -449,14 +450,14 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
     return 'timeout';
 }
 
-// --- Jouer une manche complète (avec exclusion des dominos qui échouent) ---
+// --- Jouer une manche complète ---
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber}`);
     await delay(3000);
     playedDominoes.clear();
     let turn = 1;
     let consecutiveMisses = 0;
-    let failedValues = new Set();   // valeurs des dominos qui ont échoué ce tour ou le précédent
+    let failedValues = new Set();
 
     while (true) {
         const board = await page.$('.domino_board');
@@ -514,12 +515,9 @@ async function playOneRound(page, roundNumber) {
 
         if (result.status === 'failed') {
             console.log('⚠️ Échec du coup, on attend le tour suivant.');
-            // Ajoute la valeur échouée au set pour ne pas la rejouer
             if (result.failedValue) failedValues.add(result.failedValue);
-            // Si trop d'échecs consécutifs, vide le set pour tenter autre chose
             if (failedValues.size >= 3) failedValues.clear();
         } else {
-            // Succès ou skipped, on réinitialise les échecs
             failedValues.clear();
         }
 
@@ -528,10 +526,9 @@ async function playOneRound(page, roundNumber) {
             break;
         }
 
-        // Détection de fin de match (au cas où le bouton Terminé apparaît)
         if (await isMatchOver(page)) {
             console.log('🏆 Match terminé détecté pendant la manche.');
-            return 'match_over';   // signal pour la boucle principale
+            return 'match_over';
         }
 
         turn++;
@@ -570,16 +567,13 @@ async function playOneRound(page, roundNumber) {
             ]
         });
         browser = br;
-        await page.setViewport({ width: 1920, height: 1080 });
-        // Zoom pour mieux voir les dominos et suppression des popups tenaces
+        await page.setViewport({ width: 1280, height: 720 });
+        // Injection d'un observer pour supprimer les popups tenaces
         await page.evaluate(() => {
-            document.body.style.zoom = '1.1';
-            // Supprime les bulles de mot de passe si elles persistent
-            const observer = new MutationObserver(() => {
+            new MutationObserver(() => {
                 const bubbles = document.querySelectorAll('div[role="alertdialog"], div[aria-label*="password"], div[aria-label*="save"]');
                 bubbles.forEach(b => b.remove());
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
+            }).observe(document.body, { childList: true, subtree: true });
         });
 
         // 1. Login
@@ -649,13 +643,15 @@ async function playOneRound(page, roundNumber) {
             await delay(10000);
         }
 
+        // Délai pour stabiliser l'affichage avant l'enregistrement
+        await delay(2000);
         startRecording();
 
         // 5. Boucle des manches
         let roundNumber = 1;
         while (true) {
             const result = await playOneRound(page, roundNumber);
-            if (result === 'match_over') break;   // match terminé détecté dans la manche
+            if (result === 'match_over') break;
 
             if (await isMatchOver(page)) {
                 console.log('🏆 Match terminé.');
