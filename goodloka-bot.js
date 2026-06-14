@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION EXPERT RAPIDE)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION EXPERT RAPIDE - CORRIGÉE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -62,7 +62,11 @@ async function handleChromeDialog(page) {
             }
             return null;
         });
-        if (btn) { await btn.click(); console.log('🖱️ Dialogue Chrome fermé'); await delay(1000); }
+        if (btn) {
+            const el = btn.asElement();
+            if (el) { await el.click(); console.log('🖱️ Dialogue Chrome fermé'); await delay(1000); }
+            await btn.dispose();
+        }
     } catch (e) {}
 }
 
@@ -326,7 +330,7 @@ function chooseBestDominoExpert(hand, ends, opponentPossibleHand, unknownSet, my
 }
 
 // ============================================================
-// JOUER UN TOUR (RAPIDE)
+// JOUER UN TOUR (RAPIDE - CORRIGÉ)
 // ============================================================
 async function playTurn(page, previousHandCount) {
     await updatePlayedDominoes(page);
@@ -367,7 +371,7 @@ async function playTurn(page, previousHandCount) {
 
     console.log(`🎯 Choix expert : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    // DOUBLE-CLIC RAPIDE via evaluate (plus rapide que la souris)
+    // DOUBLE-CLIC RAPIDE via evaluate
     let clicked = false;
     const clickedFirst = await page.evaluate(({ leftVal, rightVal }) => {
         const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
@@ -428,9 +432,9 @@ async function playTurn(page, previousHandCount) {
         return 'failed';
     }
 
-    // TROUVER LE BOUTON JOUER (recherche large)
+    // TROUVER LE BOUTON JOUER (CORRIGÉ avec asElement)
     await delay(200);
-    const jouerBtn = await page.evaluateHandle(() => {
+    const jouerBtnHandle = await page.evaluateHandle(() => {
         const buttons = [...document.querySelectorAll('button')];
         for (const btn of buttons) {
             if (btn.offsetParent === null) continue;
@@ -440,12 +444,19 @@ async function playTurn(page, previousHandCount) {
         return null;
     });
 
-    if (jouerBtn) {
-        await jouerBtn.click();
-        console.log('🖱️ Jouer');
+    if (jouerBtnHandle) {
+        const jouerBtn = jouerBtnHandle.asElement();
+        if (jouerBtn) {
+            await jouerBtn.click();
+            console.log('🖱️ Jouer');
+        } else {
+            await page.keyboard.press('Enter');
+            console.log('⏎ Entrée (bouton non cliquable)');
+        }
+        await jouerBtnHandle.dispose();
     } else {
         await page.keyboard.press('Enter');
-        console.log('⏎ Entrée');
+        console.log('⏎ Entrée (bouton Jouer non trouvé)');
     }
 
     await delay(1000);
