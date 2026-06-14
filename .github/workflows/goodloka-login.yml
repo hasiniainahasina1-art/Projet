@@ -1,31 +1,23 @@
-name: Create Game and Wait
+name: Domino Bot
 
 on:
   workflow_dispatch:
     inputs:
       phone:
-        description: 'Numéro de téléphone'
         required: true
       password:
-        description: 'Mot de passe'
         required: true
       score:
-        description: 'Score (défaut: 50)'
-        required: false
         default: '50'
       mise:
-        description: 'Mise (défaut: 200)'
-        required: false
         default: '200'
       joueurs:
-        description: 'Nombre de joueurs (2 ou 3)'
-        required: false
         default: '2'
 
 jobs:
-  create:
+  bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,7 +25,7 @@ jobs:
           node-version: '20'
       - run: npm install puppeteer-real-browser
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
-      - name: Exécuter la création et l'attente
+      - name: Lancer le bot
         env:
           PHONE: ${{ github.event.inputs.phone }}
           PASSWORD: ${{ github.event.inputs.password }}
@@ -44,7 +36,7 @@ jobs:
         run: |
           Xvfb :99 -screen 0 1280x720x24 &
           sleep 2
-          node goodloka-create-and-wait.js
+          node goodloka-bot.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:
