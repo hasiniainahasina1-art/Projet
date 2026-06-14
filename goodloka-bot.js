@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de jeu de dominos GoodLoka (création + jeu automatique)
+// goodloka-bot.js – Bot de jeu de dominos GoodLoka (correction handles DOM)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const password = process.env.PASSWORD;
 const desiredScore = process.env.SCORE || '50';
 const desiredMise  = process.env.MISE || '200';
 const desiredJoueurs = process.env.JOUEURS || '2';
-const waitTimeout = 5 * 60 * 1000; // 5 min d'attente max
+const waitTimeout = 5 * 60 * 1000;
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
@@ -20,7 +20,6 @@ if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: tr
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Utilitaires d'interaction humaine (pour le login) ---
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -66,110 +65,113 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Lecture du plateau et de la main ---
+// --- Récupération des extrémités du plateau ---
 async function getBoardEnds(page) {
-    // Extrémités déduites des dominos posés : on regarde le premier et le dernier dans l'ordre du DOM
-    const ends = await page.$$eval('.domino_board .domino', els => {
+    return await page.evaluate(() => {
+        const els = document.querySelectorAll('.domino_board .domino');
         if (els.length === 0) return null;
         const getVal = (el, side) => {
             const half = el.querySelector(`.domino_${side}`);
             return half ? (half.dataset?.value || half.getAttribute('data-value') || half.textContent.trim()) : null;
         };
-        const first = els[0];
-        const last = els[els.length - 1];
         return {
-            left: getVal(first, 'left'),   // extrémité gauche = partie gauche du premier domino
-            right: getVal(last, 'right')   // extrémité droite = partie droite du dernier domino
+            left: getVal(els[0], 'left'),
+            right: getVal(els[els.length - 1], 'right')
         };
     });
-    return ends;
 }
 
-async function getHandDominoes(page) {
-    return await page.$$eval('.mx_2.domino.cursor_pointer', els =>
-        els.map(el => {
+// --- Récupération des dominos jouables (avec handles) ---
+async function getPlayableDominoes(page) {
+    const handles = await page.$$('.mx_2.domino.cursor_pointer');
+    const dominoes = [];
+    for (const handle of handles) {
+        const info = await handle.evaluate(el => {
             const left = el.querySelector('.domino_left');
             const right = el.querySelector('.domino_right');
             const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
             const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
             return {
-                element: el,
                 value: `${lv}:${rv}`,
                 leftVal: lv,
                 rightVal: rv,
                 index: el.getAttribute('data-index')
             };
-        })
-    );
+        });
+        dominoes.push({ handle, ...info });
+    }
+    return dominoes;
 }
 
-// --- Choix du meilleur domino à jouer ---
+// --- Choix du meilleur domino ---
 function chooseBestDomino(hand, ends) {
-    if (!ends) return hand[0]; // premier domino si on ne peut pas déterminer les extrémités
+    if (!ends || hand.length === 0) return hand[0];
     const { left, right } = ends;
-    // Priorité : domino qui correspond aux deux extrémités (double avec le bon numéro)
+    // Double parfait
     for (const d of hand) {
-        if (d.leftVal === left && d.rightVal === right) return d;
-        if (d.leftVal === right && d.rightVal === left) return d;
+        if ((d.leftVal === left && d.rightVal === right) || (d.leftVal === right && d.rightVal === left)) return d;
     }
-    // Ensuite, domino qui correspond à une extrémité, en privilégiant les doubles
-    let best = null;
+    // Priorité aux doubles correspondant à une extrémité
     for (const d of hand) {
-        if (d.leftVal === left || d.rightVal === left || d.leftVal === right || d.rightVal === right) {
-            if (!best) best = d;
-            else if (d.leftVal === d.rightVal) best = d; // double prioritaire
-        }
+        if (d.leftVal === d.rightVal && (d.leftVal === left || d.leftVal === right)) return d;
     }
-    return best;
+    // Sinon premier qui correspond
+    for (const d of hand) {
+        if (d.leftVal === left || d.rightVal === left || d.leftVal === right || d.rightVal === right) return d;
+    }
+    // Si aucun ne correspond, on prend le premier de la main
+    return hand[0];
 }
 
-// --- Exécution d'un tour : jouer un domino ou piocher ---
+// --- Jouer un tour ---
 async function playTurn(page) {
     const ends = await getBoardEnds(page);
-    const hand = await getHandDominoes(page);
+    console.log('🎯 Extrémités :', ends);
+    const hand = await getPlayableDominoes(page);
+    console.log(`🖐️ ${hand.length} dominos jouables`);
+    hand.forEach(d => console.log(`   ${d.value} (index ${d.index})`));
+
     if (hand.length === 0) {
-        console.log('🤷 Aucun domino jouable, on tente de piocher...');
+        console.log('🤷 Aucun domino jouable, pioche...');
         const piocheBtn = await findButtonByText(page, 'Piocher');
         if (piocheBtn) {
             await piocheBtn.click();
-            console.log('🃏 Pioche effectuée');
+            console.log('🃏 Pioche');
         }
+        await delay(1000);
         return;
     }
 
     const chosen = chooseBestDomino(hand, ends);
-    console.log(`🎯 Domino choisi : ${chosen.value} (index ${chosen.index})`);
+    console.log(`🎯 Choix : ${chosen.value}`);
 
-    // Double‑clic pour sélectionner
-    await chosen.element.click();
+    // Double‑clic sur le domino choisi
+    await chosen.handle.click();
     await delay(200);
-    await chosen.element.click();
+    await chosen.handle.click();
 
-    // Essayer de valider le coup : bouton "Jouer" ou Entrée
+    // Valider le coup
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) {
         await jouerBtn.click();
-        console.log('🖱️ Clic sur Jouer');
+        console.log('🖱️ Jouer');
     } else {
         await page.keyboard.press('Enter');
-        console.log('⏎ Entrée pressée');
+        console.log('⏎ Entrée');
     }
     await delay(2000);
 }
 
-// --- Boucle principale de jeu ---
+// --- Boucle de jeu ---
 async function gameLoop(page, maxTurns = 100) {
     for (let turn = 0; turn < maxTurns; turn++) {
         console.log(`\n🔄 Tour ${turn + 1}`);
         await playTurn(page);
-
-        // Vérifier si la partie est terminée (disparition du plateau)
         const board = await page.$('.domino_board');
         if (!board) {
-            console.log('🏁 Partie terminée (plateau disparu)');
+            console.log('🏁 Partie terminée');
             break;
         }
-        // Petite pause pour ne pas surcharger
         await delay(1000);
     }
 }
@@ -195,7 +197,7 @@ async function gameLoop(page, maxTurns = 100) {
         await page.keyboard.press('Enter');
         await delay(5000);
 
-        // 2. Accès au domino
+        // 2. Domino
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
@@ -211,7 +213,7 @@ async function gameLoop(page, maxTurns = 100) {
         }
         await delay(5000);
 
-        // 3. Création de partie (classique, score=50, mise=200, 2 joueurs, sans condition)
+        // 3. Création partie
         const createBtn = await findButtonByText(page, 'Créer une partie');
         if (createBtn) await createBtn.click();
         await delay(3000);
@@ -231,7 +233,7 @@ async function gameLoop(page, maxTurns = 100) {
         await delay(500);
         (await findButtonByText(page, `${desiredJoueurs} joueurs`))?.click();
         await delay(500);
-        // Désactiver conditions
+        // Conditions off
         const allBtns = await page.$$('button');
         for (const btn of allBtns) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
@@ -255,7 +257,7 @@ async function gameLoop(page, maxTurns = 100) {
             await delay(10000);
         }
 
-        // 5. Jouer automatiquement
+        // 5. Jouer
         await gameLoop(page);
 
         await browser.close();
