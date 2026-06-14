@@ -154,6 +154,7 @@ function chooseBestDomino(hand, ends) {
 }
 
 // --- Jouer un tour (avec re-sélection du domino) ---
+    
 async function playTurn(page) {
     const ends = await getBoardEnds(page);
     console.log('🎯 Extrémités :', ends);
@@ -166,28 +167,51 @@ async function playTurn(page) {
     }
 
     const chosen = chooseBestDomino(hand, ends);
-    console.log(`🎯 Choix : ${chosen.value} (index ${chosen.index})`);
+    console.log(`🎯 Choix : ${chosen.value} (gauche=${chosen.leftVal}, droite=${chosen.rightVal})`);
 
-    let dominoHandle = null;
-    if (chosen.index !== undefined) {
-        const dominoSelector = `.mx_2.domino.cursor_pointer[data-index="${chosen.index}"]`;
-        dominoHandle = await page.$(dominoSelector);
-    }
-    if (!dominoHandle) {
-        const refreshedHand = await getPlayableDominoes(page);
-        const found = refreshedHand.find(d => d.value === chosen.value);
-        if (found) {
-            dominoHandle = found.handle;
-        } else {
-            console.log('❌ Impossible de retrouver le domino choisi.');
-            return;
+    // Essayer de localiser le domino par ses valeurs et de cliquer (avec retry)
+    let success = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
+            const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
+            for (const d of dominos) {
+                const left = d.querySelector('.domino_left');
+                const right = d.querySelector('.domino_right');
+                const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : null;
+                const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : null;
+                if (lv === leftVal && rv === rightVal) return d;
+            }
+            return null;
+        }, { leftVal: chosen.leftVal, rightVal: chosen.rightVal });
+
+        if (!dominoElement) {
+            console.log(`⚠️ Tentative ${attempt + 1} : domino introuvable.`);
+            await delay(300);
+            continue;
         }
+
+        const box = await dominoElement.boundingBox();
+        if (!box) {
+            console.log(`⚠️ Tentative ${attempt + 1} : boundingBox null.`);
+            await delay(300);
+            continue;
+        }
+
+        const x = box.x + box.width / 2;
+        const y = box.y + box.height / 2;
+        await page.mouse.click(x, y);
+        await delay(200);
+        await page.mouse.click(x, y);
+        success = true;
+        break;
     }
 
-    await dominoHandle.click();
-    await delay(200);
-    await dominoHandle.click();
+    if (!success) {
+        console.log('❌ Impossible de cliquer sur le domino après 3 tentatives.');
+        return;
+    }
 
+    // Valider le coup
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) {
         await jouerBtn.click();
@@ -198,7 +222,6 @@ async function playTurn(page) {
     }
     await delay(2000);
 }
-
 // --- Attente active de son tour ---
 async function waitForMyTurn(page, timeout = 28000) {
     console.log('⏳ Attente de mon tour...');
