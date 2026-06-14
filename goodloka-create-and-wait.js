@@ -1,4 +1,4 @@
-// goodloka-create-and-wait.js – Créer une partie, attendre un adversaire, inspecter ses dominos (version avec attente prolongée)
+// goodloka-create-and-wait.js – version avec extraction du plateau et de la main
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const password = process.env.PASSWORD;
 const desiredScore = process.env.SCORE || '50';
 const desiredMise  = process.env.MISE || '200';
 const desiredJoueurs = process.env.JOUEURS || '2';
-const waitTimeout = 5 * 60 * 1000; // 5 minutes
+const waitTimeout = 5 * 60 * 1000;
 
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
@@ -79,7 +79,6 @@ async function findButtonByText(page, text) {
     return null;
 }
 
-// --- Vérifier la présence d'un bouton de jeu ---
 async function hasGameButton(page) {
     return await page.evaluate(() => {
         const buttons = [...document.querySelectorAll('button')];
@@ -90,70 +89,42 @@ async function hasGameButton(page) {
     });
 }
 
-// --- Inspection améliorée avec attente des données ---
-async function inspectOpponentDominoes(page) {
-    console.log('🕵️ Analyse des dominos de l\'adversaire...');
+// --- Extraire les valeurs d'un domino à partir de ses demi-parties ---
+function getDominoValue(domEl) {
+    const left = domEl.querySelector('.domino_left');
+    const right = domEl.querySelector('.domino_right');
+    const lv = left ? (left.dataset?.value || left.getAttribute('data-value') || left.textContent.trim()) : '?';
+    const rv = right ? (right.dataset?.value || right.getAttribute('data-value') || right.textContent.trim()) : '?';
+    return `${lv}:${rv}`;
+}
 
-    // Attendre jusqu'à 30 secondes que les dominos contiennent quelque chose
-    const start = Date.now();
-    let hasContent = false;
-    while (Date.now() - start < 30000) {
-        const emptyCount = await page.$$eval('.opponent_dominoes .o_domino', els =>
-            els.filter(el => el.innerHTML.trim() === '').length
-        );
-        if (emptyCount === 0) {
-            hasContent = true;
-            break;
-        }
-        console.log(`⏳ ${emptyCount} dominos encore vides, attente...`);
-        await delay(3000);
-    }
+// --- Analyse complète de l'état du jeu ---
+async function analyzeGameState(page) {
+    console.log('🔍 Analyse de l\'état du jeu...');
+    await delay(3000);
+    await page.screenshot({ path: path.join(screenshotsDir, 'game_state.png'), fullPage: true });
 
-    if (!hasContent) {
-        console.log('⚠️ Les dominos adverses semblent vides ou masqués (face cachée).');
-        // Tenter de capturer l'état actuel et afficher le HTML pour diagnostic
-        const sampleHTML = await page.$eval('.opponent_dominoes .o_domino', el => el.outerHTML);
-        console.log('   HTML d\'un domino adverse :', sampleHTML.substring(0, 300));
-    }
-
-    await page.screenshot({ path: path.join(screenshotsDir, 'opponent_dominoes.png'), fullPage: true });
-
-    // Lecture des dominos
-    const opponentDominoes = await page.$$eval('.opponent_dominoes .o_domino', els =>
-        els.map((el, index) => {
-            const left = el.querySelector('.domino_left');
-            const right = el.querySelector('.domino_right');
-            const leftVal = left ? (left.dataset?.value || left.getAttribute('data-value')) : null;
-            const rightVal = right ? (right.dataset?.value || right.getAttribute('data-value')) : null;
-            const leftText = left ? left.textContent.trim() : '';
-            const rightText = right ? right.textContent.trim() : '';
-
-            let text = 'inconnu (peut-être face cachée)';
-            if (leftVal && rightVal) {
-                text = `${leftVal}:${rightVal}`;
-            } else if (leftText && rightText) {
-                text = `${leftText}:${rightText}`;
-            } else if (el.innerHTML.trim() === '') {
-                text = 'vide (face cachée ou non distribué)';
-            } else {
-                text = `HTML: ${el.innerHTML.substring(0, 50)}`;
-            }
-
-            return {
-                index: index + 1,
-                text,
-                leftVal: leftVal || leftText || '?',
-                rightVal: rightVal || rightText || '?',
-                visible: el.offsetParent !== null
-            };
-        })
+    // Dominos sur le plateau
+    const boardDominoes = await page.$$eval('.domino_board .domino', els =>
+        els.map(el => ({
+            value: getDominoValue(el),
+            pos: el.getBoundingClientRect()
+        }))
     );
+    console.log(`🎲 Plateau : ${boardDominoes.length} dominos`);
+    boardDominoes.forEach(d => console.log(`   ${d.value} (x=${Math.round(d.pos.x)}, y=${Math.round(d.pos.y)})`));
 
-    console.log(`🎴 ${opponentDominoes.length} dominos adverses :`);
-    opponentDominoes.forEach(d => {
-        console.log(`   ${d.index}. ${d.text} (visible: ${d.visible})`);
-    });
-    return opponentDominoes;
+    // Votre main (dominos cliquables)
+    const handDominoes = await page.$$eval('.mx_2.domino.cursor_pointer', els =>
+        els.map(el => ({
+            value: getDominoValue(el),
+            index: el.getAttribute('data-index')
+        }))
+    );
+    console.log(`🖐️ Votre main : ${handDominoes.length} dominos`);
+    handDominoes.forEach(d => console.log(`   ${d.value} (index ${d.index})`));
+
+    return { boardDominoes, handDominoes };
 }
 
 (async () => {
@@ -177,20 +148,19 @@ async function inspectOpponentDominoes(page) {
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await randomDelay(500, 1500);
 
-        console.log('⏎ Appui sur Entrée pour valider la connexion...');
+        console.log('⏎ Appui sur Entrée...');
         await page.keyboard.press('Enter');
 
-        console.log('⏳ Attente de la redirection...');
         try { await page.waitForFunction(() => !window.location.href.includes('login'), { timeout: 30000 }); } catch (e) {}
         await delay(5000);
-        console.log(`📍 URL après connexion : ${page.url()}`);
+        console.log(`📍 Connecté : ${page.url()}`);
 
-        // 2. Aller sur la liste des jeux et cliquer sur "Jouer"
+        // 2. Domino
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
 
-        console.log('🔍 Clic sur le premier "Jouer"...');
+        console.log('🔍 Clic sur "Jouer"...');
         const jouerHandle = await page.evaluateHandle(() => {
             const links = [...document.querySelectorAll('a')];
             return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
@@ -204,103 +174,85 @@ async function inspectOpponentDominoes(page) {
         await delay(5000);
         console.log(`📍 Page domino : ${page.url()}`);
 
-        // 3. Cliquer sur "Créer une partie"
+        // 3. Créer une partie
         const createBtn = await findButtonByText(page, 'Créer une partie');
-        if (!createBtn) throw new Error('Bouton "Créer une partie" introuvable');
+        if (!createBtn) throw new Error('Bouton introuvable');
         await createBtn.click();
-        console.log('✅ Modale de création ouverte');
+        console.log('✅ Modale création ouverte');
         await delay(3000);
 
-        // 4. Sélectionner les options
+        // Mode Classique
         const modeBtns = await page.$$('button.mode-pill');
         if (modeBtns.length >= 1) {
             let classiqueBtn = null;
             for (const b of modeBtns) {
-                const txt = await page.evaluate(el => el.textContent.trim(), b);
-                if (txt.includes('Classique')) {
+                if ((await page.evaluate(el => el.textContent.trim(), b)).includes('Classique')) {
                     classiqueBtn = b;
                     break;
                 }
             }
             if (classiqueBtn) await classiqueBtn.click();
             else await modeBtns[0].click();
-            console.log('✅ Mode Classique sélectionné');
+            console.log('✅ Mode Classique');
         }
         await delay(1000);
 
+        // Score, Mise, Joueurs
         const scoreBtn = await findButtonByText(page, desiredScore);
-        if (scoreBtn) {
-            await scoreBtn.click();
-            console.log(`✅ Score ${desiredScore} sélectionné`);
-        }
+        if (scoreBtn) { await scoreBtn.click(); console.log(`✅ Score ${desiredScore}`); }
         await delay(500);
-
         const miseBtn = await findButtonByText(page, desiredMise);
-        if (miseBtn) {
-            await miseBtn.click();
-            console.log(`✅ Mise ${desiredMise} sélectionnée`);
-        }
+        if (miseBtn) { await miseBtn.click(); console.log(`✅ Mise ${desiredMise}`); }
         await delay(500);
-
         const joueursBtn = await findButtonByText(page, `${desiredJoueurs} joueurs`);
-        if (joueursBtn) {
-            await joueursBtn.click();
-            console.log(`✅ ${desiredJoueurs} joueurs sélectionné`);
-        }
+        if (joueursBtn) { await joueursBtn.click(); console.log(`✅ ${desiredJoueurs} joueurs`); }
         await delay(500);
 
-        const allButtons = await page.$$('button');
-        for (const btn of allButtons) {
+        // Conditions off
+        const allBtns = await page.$$('button');
+        for (const btn of allBtns) {
             const txt = await page.evaluate(el => el.textContent.trim(), btn);
             const cls = await page.evaluate(el => el.className, btn);
             if ((txt.match(/[<>]\s*\d/) || txt.includes('📅')) && (cls.includes('active') || cls.includes('selected'))) {
                 await btn.click();
-                console.log(`🔓 Condition "${txt}" désactivée`);
+                console.log(`🔓 Condition "${txt}"`);
                 await delay(300);
             }
         }
         console.log('✅ Conditions désactivées');
 
-        // 5. Créer la partie
-        const createFinalBtn = await findButtonByText(page, 'Créer la partie');
-        if (createFinalBtn) {
-            await createFinalBtn.click();
-            console.log('🖱️ Partie créée');
-        } else {
-            throw new Error('Bouton "Créer la partie" introuvable');
-        }
+        // Créer
+        const createFinal = await findButtonByText(page, 'Créer la partie');
+        if (createFinal) await createFinal.click();
+        else throw new Error('Bouton final introuvable');
+        console.log('🖱️ Partie créée');
         await delay(3000);
 
-        // 6. Attendre un adversaire (max 5 minutes)
-        console.log('⏳ Attente d\'un adversaire (max 5 min)...');
+        // Attente adversaire
+        console.log('⏳ Attente adversaire...');
         const startWait = Date.now();
         let gameStarted = false;
         while (Date.now() - startWait < waitTimeout) {
-            const boardEl = await page.$('.domino_board');
-            const playBtnVisible = await hasGameButton(page);
-            if (boardEl || playBtnVisible) {
-                console.log('🎮 Partie commencée !');
+            if (await hasGameButton(page) || (await page.$('.domino_board'))) {
                 gameStarted = true;
+                console.log('🎮 Partie commencée !');
                 break;
             }
-            const opponentEl = await page.$('.opponent_dominoes');
-            if (opponentEl) console.log('👥 Adversaire détecté, attente du démarrage...');
-            console.log('⏳ Pas encore de partie...');
+            console.log('⏳...');
             await delay(10000);
         }
 
         if (gameStarted) {
-            // 🎯 Inspection avec attente prolongée
-            await inspectOpponentDominoes(page);
+            await analyzeGameState(page);
         } else {
-            console.log('⚠️ Aucun adversaire après 5 minutes.');
+            console.log('⚠️ Aucun adversaire après 5 min.');
             await page.screenshot({ path: path.join(screenshotsDir, 'no_opponent.png'), fullPage: true });
         }
 
         await browser.close();
         process.exit(0);
     } catch (err) {
-        console.error('❌ Erreur fatale :', err.message);
+        console.error('❌', err.message);
         if (browser) await browser.close();
         process.exit(1);
     }
