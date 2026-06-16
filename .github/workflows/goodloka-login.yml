@@ -1,4 +1,4 @@
-name: Domino Bot
+name: Domino Bot avec VNC
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ on:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +37,34 @@ jobs:
       - name: Installer puppeteer-real-browser
         run: npm install puppeteer-real-browser
 
-      - name: Installer Xvfb et ffmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb ffmpeg
+      - name: Installer Xvfb et x11vnc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb x11vnc
+
+      - name: Démarrer Xvfb et VNC
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          sleep 2
+          x11vnc -display :99 -forever -nopw -quiet -listen 0.0.0.0 &
+          sleep 2
+          echo "✅ VNC démarré sur le port 5900"
+
+      - name: Installer ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq ngrok
+
+      - name: Exposer VNC via ngrok
+        env:
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+        run: |
+          ngrok config add-authtoken $NGROK_AUTH_TOKEN
+          ngrok tcp 5900 --log=stdout &
+          sleep 5
+          echo ""
+          echo "🔗 URL VNC :"
+          curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1
+          echo ""
 
       - name: Lancer le bot
         env:
@@ -49,15 +75,5 @@ jobs:
           JOUEURS: ${{ github.event.inputs.joueurs }}
           DISPLAY: ':99'
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 &
           sleep 3
           node goodloka-bot.js
-
-      - name: Uploader les artefacts (captures + vidéo)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: game-recordings
-          path: |
-            screenshots/
-            recordings/
