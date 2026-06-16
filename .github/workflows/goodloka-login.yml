@@ -53,35 +53,29 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:5900 a.pinggy.io > /tmp/pinggy.txt 2>&1 &
           echo "⏳ Attente du tunnel pinggy..."
           
-          # Attendre que l'URL apparaisse (max 30 secondes)
           for i in {1..30}; do
-            if grep -q "pinggy.link" /tmp/pinggy.txt 2>/dev/null; then
+            if grep -q "pinggy" /tmp/pinggy.txt 2>/dev/null; then
               break
             fi
             sleep 1
           done
           
+          # Extraire l'URL (pinggy.link ou pinggy-free.link)
+          PINGGY_URL=$(grep -oE '[a-zA-Z0-9-]+\.pinggy[a-zA-Z0-9.-]*\.link' /tmp/pinggy.txt | head -1)
+          
           echo ""
           echo "=============================================="
-          echo "🔗 Contenu complet du tunnel :"
-          cat /tmp/pinggy.txt
-          echo ""
-          echo "=============================================="
-          
-          # Extraire l'URL
-          PINGGY_URL=$(grep -oE '[a-zA-Z0-9]+\.pinggy\.link' /tmp/pinggy.txt | head -1)
-          
           if [ -n "$PINGGY_URL" ]; then
+            echo "✅ Tunnel VNC actif !"
             echo ""
-            echo "✅ URL VNC trouvée !"
             echo "🔗 Adresse : ${PINGGY_URL}"
             echo "🔌 Port    : 443"
             echo ""
-            echo "Ouvre VNC Viewer et connecte-toi à :"
-            echo "   ${PINGGY_URL}:443"
+            echo "📋 Pour te connecter avec VNC Viewer :"
+            echo "   Adresse : ${PINGGY_URL}"
+            echo "   Port    : 443"
           else
-            echo ""
-            echo "⚠️ URL non trouvée, voici la sortie brute :"
+            echo "⚠️ URL non trouvée, contenu brut :"
             cat /tmp/pinggy.txt
           fi
           echo "=============================================="
