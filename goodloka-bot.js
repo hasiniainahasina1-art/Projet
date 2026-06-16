@@ -429,6 +429,7 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     
 // Gérer le choix du côté si le domino correspond aux deux extrémités
+// Gérer le choix du côté si le domino correspond aux deux extrémités
 if (ends && dominoBox) {
     const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
                            (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
@@ -441,59 +442,25 @@ if (ends && dominoBox) {
         const unknownSet = getUnknownSet(myHandSet);
         const opponentPossibleHand = getOpponentPossibleHand(unknownSet);
 
-        // Score pour le côté gauche
-        const leftEnds = simulateMove(ends, chosen, 'left');
         const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSet, 2);
-
-        // Score pour le côté droit
-        const rightEnds = simulateMove(ends, chosen, 'right');
         const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSet, 2);
 
         console.log(`   Score côté gauche : ${leftScore.toFixed(1)}`);
         console.log(`   Score côté droit  : ${rightScore.toFixed(1)}`);
 
-        // Choisir le meilleur côté
         const chooseLeft = leftScore >= rightScore;
-        const targetSide = chooseLeft ? 'gauche' : 'droite';
-        console.log(`   → Choix stratégique : ${targetSide}`);
+        console.log(`   → Choix stratégique : ${chooseLeft ? 'gauche' : 'droite'}`);
 
-        // Cliquer sur le domino correspondant du plateau
-        const selector = chooseLeft 
-            ? '.domino_board .domino:first-child'   // premier domino = gauche
-            : '.domino_board .domino:last-child';    // dernier domino = droite
+        // Envoyer la touche fléchée puis Entrée pour valider
+        await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
+        await delay(300);
+        await page.keyboard.press('Enter');
+        console.log(`⌨️ Flèche ${chooseLeft ? 'gauche' : 'droite'} + Entrée`);
 
-        const targetDomino = await page.$(selector);
-        if (targetDomino) {
-            const box = await targetDomino.boundingBox();
-            if (box) {
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                console.log(`🖱️ Clic sur le domino de ${targetSide} pour valider le choix`);
-            } else {
-                // Fallback clavier
-                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-                await delay(100);
-                await page.keyboard.press('Enter');
-                console.log(`⌨️ Flèche ${targetSide} + Entrée (fallback)`);
-            }
-        } else {
-            await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-            await delay(100);
-            await page.keyboard.press('Enter');
-            console.log(`⌨️ Flèche ${targetSide} + Entrée (fallback)`);
-        }
         await delay(500);
     }
 }
-
-
-    // Bouton Jouer
-    const jouerBtn = await findButtonByText(page, 'Jouer');
-    if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
-    else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
-
-    await delay(1500);
-    return { status: 'played' };
-}
+    
 
 // ============================================================
 // DÉTECTION DES PASSES
