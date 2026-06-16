@@ -62,33 +62,33 @@ jobs:
           bore local 5900 --to bore.pub > /tmp/bore.txt 2>&1 &
           BORE_PID=$!
           
-          # Attendre que le tunnel soit prêt
           sleep 5
           
           echo ""
           echo "=============================================="
-          echo "📋 Sortie de bore :"
-          cat /tmp/bore.txt
-          echo ""
           
-          # Extraire l'adresse et le port
-          BORE_OUTPUT=$(cat /tmp/bore.txt)
-          BORE_HOST=$(echo "$BORE_OUTPUT" | grep -oE 'bore\.pub' | head -1)
-          BORE_PORT=$(echo "$BORE_OUTPUT" | grep -oE 'listening on [0-9]+' | grep -oE '[0-9]+' | head -1)
+          # Extraire le port de "bore.pub:XXXXX"
+          BORE_PORT=$(grep -oE 'bore\.pub:[0-9]+' /tmp/bore.txt | cut -d: -f2 | head -1)
           
           if [ -n "$BORE_PORT" ]; then
             echo ""
             echo "✅ Tunnel VNC actif !"
+            echo ""
             echo "🔗 Adresse : bore.pub"
             echo "🔌 Port    : ${BORE_PORT}"
             echo ""
-            echo "📋 Pour te connecter avec VNC Viewer :"
+            echo "=============================================="
+            echo ""
+            echo "📋 Ouvre VNC Viewer et connecte-toi à :"
             echo "   Adresse : bore.pub"
             echo "   Port    : ${BORE_PORT}"
+            echo ""
+            echo "=============================================="
           else
-            echo "⚠️ Port non trouvé dans la sortie."
+            echo "⚠️ Port non trouvé. Sortie brute :"
+            cat /tmp/bore.txt
+            echo "=============================================="
           fi
-          echo "=============================================="
           echo ""
 
       - name: Lancer le bot
