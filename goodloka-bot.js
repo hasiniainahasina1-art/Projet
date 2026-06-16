@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (EXPERT + VNC + ANTI-DIALOGUE + ZOOM)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - EXPERT + VNC)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -58,12 +58,12 @@ async function handleChromeSaveDialog(page) {
 }
 
 // ============================================================
-// ZOOM POUR VOIR LES DOMINOS
+// ZOOM NORMAL (VOIR TOUT L'ÉCRAN)
 // ============================================================
 async function adjustViewForDominoes(page) {
     await page.evaluate(() => {
-        document.body.style.zoom = '1.3';
-        window.scrollTo(0, document.body.scrollHeight * 0.7);
+        document.body.style.zoom = '1.0';
+        window.scrollTo(0, 0);
     });
 }
 
