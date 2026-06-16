@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (EXPERT + VNC DIRECT)
+// goodloka-bot.js – Bot de domino GoodLoka (EXPERT + VNC + ANTI-DIALOGUE + ZOOM)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -17,7 +17,59 @@ if (!phone || !password) {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Utilitaires DOM ---
+// ============================================================
+// GESTION DU DIALOGUE CHROME
+// ============================================================
+async function handleChromeSaveDialog(page) {
+    try {
+        await delay(3000);
+        const clicked = await page.evaluate(() => {
+            const buttons = [...document.querySelectorAll('button')];
+            for (const btn of buttons) {
+                const txt = btn.textContent.trim().toLowerCase();
+                if (txt === 'never' || txt === 'save' || txt === 'enregistrer' || 
+                    txt === 'jamais' || txt === 'no thanks' || txt === 'non merci') {
+                    btn.click();
+                    return txt;
+                }
+            }
+            const dialogs = document.querySelectorAll('div[role="dialog"], div[role="alertdialog"]');
+            for (const d of dialogs) {
+                const btns = d.querySelectorAll('button');
+                for (const btn of btns) {
+                    const txt = btn.textContent.trim().toLowerCase();
+                    if (txt === 'never' || txt === 'save' || txt === 'enregistrer' || 
+                        txt === 'jamais' || txt === 'no thanks' || txt === 'non merci') {
+                        btn.click();
+                        return txt;
+                    }
+                }
+            }
+            return null;
+        });
+        if (clicked) {
+            console.log(`🖱️ Dialogue Chrome fermé (${clicked})`);
+        } else {
+            await page.keyboard.press('Escape');
+            console.log('⌨️ Touche Escape pressée');
+        }
+        await delay(1000);
+    } catch (e) {}
+}
+
+// ============================================================
+// ZOOM POUR VOIR LES DOMINOS
+// ============================================================
+async function adjustViewForDominoes(page) {
+    await page.evaluate(() => {
+        document.body.style.zoom = '1.3';
+        window.scrollTo(0, document.body.scrollHeight * 0.7);
+    });
+}
+
+// ============================================================
+// UTILITAIRES DOM
+// ============================================================
 async function fillFieldHuman(page, selector, value, fieldName) {
     console.log(`⌨️ Remplissage de ${fieldName}...`);
     let attempts = 0;
@@ -64,7 +116,9 @@ async function killChromePopups(page) {
     });
 }
 
-// --- Lecture du jeu ---
+// ============================================================
+// LECTURE DU JEU
+// ============================================================
 async function getBoardEnds(page) {
     return await page.evaluate(() => {
         const els = document.querySelectorAll('.domino_board .domino');
@@ -105,7 +159,9 @@ async function getFullHand(page) {
     });
 }
 
-// --- Suivi des dominos joués ---
+// ============================================================
+// SUIVI DES DOMINOS JOUÉS
+// ============================================================
 let playedDominoes = new Set();
 
 function normalize(v1, v2) {
@@ -126,7 +182,9 @@ async function updatePlayedDominoes(page) {
     dominoes.forEach(d => { if (d.left !== '?' && d.right !== '?') playedDominoes.add(normalize(d.left, d.right)); });
 }
 
-// --- Stratégie experte ---
+// ============================================================
+// STRATÉGIE EXPERT
+// ============================================================
 let opponentPassedValues = new Set();
 
 function allDominoes() {
@@ -269,10 +327,13 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
     return best || hand[0];
 }
 
-// --- Jouer un tour ---
+// ============================================================
+// JOUER UN TOUR
+// ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
     await killChromePopups(page);
+    await adjustViewForDominoes(page);
 
     const ends = await getBoardEnds(page);
     let hand = await getPlayableDominoes(page);
@@ -367,7 +428,9 @@ async function playTurn(page, previousHandCount, failedValues) {
     return { status: 'played' };
 }
 
-// --- Détection des passes adverses ---
+// ============================================================
+// DÉTECTION DES PASSES
+// ============================================================
 async function detectOpponentPass(page, previousBoardEnds) {
     const currentEnds = await getBoardEnds(page);
     if (currentEnds && previousBoardEnds &&
@@ -380,7 +443,9 @@ async function detectOpponentPass(page, previousBoardEnds) {
     return currentEnds;
 }
 
-// --- Détection fins ---
+// ============================================================
+// DÉTECTION FINS
+// ============================================================
 async function isRoundOver(page) {
     return await page.evaluate(() => {
         const bodyText = document.body.innerText.toLowerCase();
@@ -432,7 +497,9 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
     return 'timeout';
 }
 
-// --- Jouer une manche ---
+// ============================================================
+// JOUER UNE MANCHE
+// ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (EXPERT)`);
     await delay(3000);
@@ -487,7 +554,9 @@ async function playOneRound(page, roundNumber) {
     return 'round_over';
 }
 
-// --- Main ---
+// ============================================================
+// MAIN
+// ============================================================
 (async () => {
     let browser;
     try {
@@ -498,20 +567,24 @@ async function playOneRound(page, roundNumber) {
         browser = br;
         await page.setViewport({ width: 1280, height: 720 });
 
-        console.log('🔗 Le navigateur est visible via VNC !');
-        console.log('   Ouvre VNC Viewer et connecte-toi à l\'adresse ngrok\n');
+        console.log('🔗 Le navigateur est visible via VNC !\n');
 
+        // 1. Login
         const loginUrl = 'https://www.goodloka.com/auth/login';
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
         await fillFieldHuman(page, 'input[type="text"][placeholder*="Ex"]', phone, 'téléphone');
         await fillFieldHuman(page, 'input[type="password"]', password, 'mot de passe');
         await page.keyboard.press('Enter');
-        await delay(5000);
+        await delay(3000);
+        await handleChromeSaveDialog(page);
 
+        // 2. Domino
         const gamesListUrl = 'https://www.goodloka.com/games/list';
         await page.goto(gamesListUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(5000);
+        await handleChromeSaveDialog(page);
+        
         const jouerLink = await page.evaluateHandle(() => {
             const links = [...document.querySelectorAll('a')];
             return links.find(a => a.textContent.trim() === 'Jouer' && a.offsetParent !== null);
@@ -523,10 +596,13 @@ async function playOneRound(page, roundNumber) {
             await jouerLink.dispose();
         }
         await delay(5000);
+        await handleChromeSaveDialog(page);
 
+        // 3. Création partie
         const createBtn = await findButtonByText(page, 'Créer une partie');
         if (createBtn) await createBtn.click();
         await delay(3000);
+
         const modeBtns = await page.$$('button.mode-pill');
         for (const b of modeBtns) {
             if ((await page.evaluate(el => el.textContent.trim(), b)).includes('Classique')) { await b.click(); break; }
@@ -544,6 +620,7 @@ async function playOneRound(page, roundNumber) {
         (await findButtonByText(page, 'Créer la partie'))?.click();
         await delay(3000);
 
+        // 4. Attente adversaire
         console.log('⏳ Attente adversaire pour la première manche...');
         const startWait = Date.now();
         while (Date.now() - startWait < waitTimeout) {
@@ -551,6 +628,7 @@ async function playOneRound(page, roundNumber) {
             await delay(10000);
         }
 
+        // 5. Boucle des manches
         let roundNumber = 1;
         while (true) {
             const result = await playOneRound(page, roundNumber);
