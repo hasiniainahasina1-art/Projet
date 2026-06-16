@@ -1,8 +1,7 @@
-// goodloka-bot.js – Bot de domino GoodLoka (EXPERT + AFFICHAGE EN DIRECT)
+// goodloka-bot.js – Bot de domino GoodLoka (EXPERT + VNC DIRECT)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
 
 const phone    = process.env.PHONE;
 const password = process.env.PASSWORD;
@@ -14,28 +13,6 @@ const waitTimeout = 5 * 60 * 1000;
 if (!phone || !password) {
     console.error('❌ PHONE et PASSWORD sont obligatoires');
     process.exit(1);
-}
-
-const screenshotsDir = path.join(__dirname, 'screenshots');
-if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
-
-const recordingsDir = path.join(__dirname, 'recordings');
-if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir, { recursive: true });
-
-let ffmpegProcess = null;
-
-function startRecording(filename = 'game_recording.mp4') {
-    const filepath = path.join(recordingsDir, filename);
-    console.log('🎥 Démarrage de l\'enregistrement vidéo...');
-    ffmpegProcess = spawn('ffmpeg', [
-        '-f', 'x11grab', '-video_size', '1280x720', '-i', ':99',
-        '-codec:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', filepath
-    ], { stdio: 'ignore' });
-    ffmpegProcess.on('error', (err) => console.error('❌ Erreur ffmpeg:', err.message));
-}
-
-function stopRecording() {
-    if (ffmpegProcess) { console.log('🛑 Arrêt de l\'enregistrement vidéo.'); ffmpegProcess.kill('SIGINT'); ffmpegProcess = null; }
 }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -292,7 +269,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
     return best || hand[0];
 }
 
-// --- Jouer un tour (AVEC AFFICHAGE EN DIRECT) ---
+// --- Jouer un tour ---
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
     await killChromePopups(page);
@@ -301,7 +278,6 @@ async function playTurn(page, previousHandCount, failedValues) {
     let hand = await getPlayableDominoes(page);
     const fullHand = await getFullHand(page);
 
-    // 🔥 AFFICHAGE EN DIRECT
     console.log('\n┌─────────────────────────────────────────────┐');
     console.log('│ 🎮 ÉTAT DU PLATEAU                          │');
     console.log('├─────────────────────────────────────────────┤');
@@ -334,7 +310,7 @@ async function playTurn(page, previousHandCount, failedValues) {
     console.log(`│ Mes dominos : ${fullHand.length}`);
     console.log('├─────────────────────────────────────────────┤');
     console.log('│ 🃏 MA MAIN                                  │');
-    fullHand.forEach((d, i) => {
+    fullHand.forEach((d) => {
         console.log(`│ ${d.playable ? '✅' : '❌'} [${d.leftVal}|${d.rightVal}]`);
     });
     console.log('├─────────────────────────────────────────────┤');
@@ -523,7 +499,7 @@ async function playOneRound(page, roundNumber) {
         await page.setViewport({ width: 1280, height: 720 });
 
         console.log('🔗 Le navigateur est visible via VNC !');
-        console.log('   Installe VNC Viewer et connecte-toi à l\'adresse ngrok\n');
+        console.log('   Ouvre VNC Viewer et connecte-toi à l\'adresse ngrok\n');
 
         const loginUrl = 'https://www.goodloka.com/auth/login';
         await page.goto(loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -575,9 +551,6 @@ async function playOneRound(page, roundNumber) {
             await delay(10000);
         }
 
-        await delay(2000);
-        startRecording();
-
         let roundNumber = 1;
         while (true) {
             const result = await playOneRound(page, roundNumber);
@@ -607,12 +580,10 @@ async function playOneRound(page, roundNumber) {
             roundNumber++;
         }
 
-        stopRecording();
         await browser.close();
         process.exit(0);
     } catch (err) {
         console.error('❌', err.message);
-        stopRecording();
         if (browser) await browser.close();
         process.exit(1);
     }
