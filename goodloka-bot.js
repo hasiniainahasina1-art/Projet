@@ -62,11 +62,17 @@ async function handleChromeSaveDialog(page) {
 // ============================================================
 async function adjustViewForDominoes(page) {
     await page.evaluate(() => {
-        document.body.style.zoom = '1.0';
-        window.scrollTo(0, 0);
+        // Zoom arrière pour voir tout le jeu (haut + plateau + bas)
+        document.body.style.zoom = '0.8';
+        // Centrer le plateau verticalement
+        const board = document.querySelector('.domino_board');
+        if (board) {
+            board.scrollIntoView({ behavior: 'instant', block: 'center' });
+        } else {
+            window.scrollTo(0, 0);
+        }
     });
 }
-
 // ============================================================
 // UTILITAIRES DOM
 // ============================================================
