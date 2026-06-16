@@ -48,35 +48,45 @@ jobs:
           sleep 2
           echo "✅ VNC démarré sur le port 5900"
 
-      - name: Exposer VNC via pinggy
+      - name: Installer bore
         run: |
-          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -p 443 -R0:localhost:5900 a.pinggy.io > /tmp/pinggy.txt 2>&1 &
-          echo "⏳ Attente du tunnel pinggy..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-unknown-linux-musl.tar.gz -o bore.tar.gz
+          tar -xzf bore.tar.gz
+          chmod +x bore
+          sudo mv bore /usr/local/bin/
+          echo "✅ bore installé"
+
+      - name: Exposer VNC via bore
+        run: |
+          echo "⏳ Démarrage du tunnel bore..."
+          bore local 5900 --to bore.pub > /tmp/bore.txt 2>&1 &
+          BORE_PID=$!
           
-          for i in {1..30}; do
-            if grep -q "pinggy" /tmp/pinggy.txt 2>/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          
-          # Extraire l'URL (pinggy.link ou pinggy-free.link)
-          PINGGY_URL=$(grep -oE '[a-zA-Z0-9-]+\.pinggy[a-zA-Z0-9.-]*\.link' /tmp/pinggy.txt | head -1)
+          # Attendre que le tunnel soit prêt
+          sleep 5
           
           echo ""
           echo "=============================================="
-          if [ -n "$PINGGY_URL" ]; then
-            echo "✅ Tunnel VNC actif !"
+          echo "📋 Sortie de bore :"
+          cat /tmp/bore.txt
+          echo ""
+          
+          # Extraire l'adresse et le port
+          BORE_OUTPUT=$(cat /tmp/bore.txt)
+          BORE_HOST=$(echo "$BORE_OUTPUT" | grep -oE 'bore\.pub' | head -1)
+          BORE_PORT=$(echo "$BORE_OUTPUT" | grep -oE 'listening on [0-9]+' | grep -oE '[0-9]+' | head -1)
+          
+          if [ -n "$BORE_PORT" ]; then
             echo ""
-            echo "🔗 Adresse : ${PINGGY_URL}"
-            echo "🔌 Port    : 443"
+            echo "✅ Tunnel VNC actif !"
+            echo "🔗 Adresse : bore.pub"
+            echo "🔌 Port    : ${BORE_PORT}"
             echo ""
             echo "📋 Pour te connecter avec VNC Viewer :"
-            echo "   Adresse : ${PINGGY_URL}"
-            echo "   Port    : 443"
+            echo "   Adresse : bore.pub"
+            echo "   Port    : ${BORE_PORT}"
           else
-            echo "⚠️ URL non trouvée, contenu brut :"
-            cat /tmp/pinggy.txt
+            echo "⚠️ Port non trouvé dans la sortie."
           fi
           echo "=============================================="
           echo ""
