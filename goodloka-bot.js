@@ -427,39 +427,47 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
+    
     // Gérer le choix du côté si le domino correspond aux deux extrémités
-    if (ends) {
-        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
-                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
-        if (matchBothSides) {
-            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
-            await delay(800);
-            // Essayer de trouver un bouton "Gauche" ou "Left"
-            const sideBtn = await page.evaluateHandle(() => {
-                const buttons = [...document.querySelectorAll('button')];
-                for (const btn of buttons) {
-                    const txt = btn.textContent.trim().toLowerCase();
-                    if (txt === 'gauche' || txt === 'left' || txt.includes('left') || txt === '←') return btn;
-                }
-                return null;
-            });
+if (ends) {
+    const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                           (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+    if (matchBothSides) {
+        console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
+        await delay(800);
+        // Essayer de trouver un bouton "Gauche" ou "Left"
+        const sideBtnHandle = await page.evaluateHandle(() => {
+            const buttons = [...document.querySelectorAll('button')];
+            for (const btn of buttons) {
+                const txt = btn.textContent.trim().toLowerCase();
+                if (txt === 'gauche' || txt === 'left' || txt.includes('left') || txt === '←') return btn;
+            }
+            return null;
+        });
+        let sideClicked = false;
+        if (sideBtnHandle) {
+            const sideBtn = sideBtnHandle.asElement();
             if (sideBtn) {
                 await sideBtn.click();
                 console.log('🖱️ Côté gauche sélectionné via bouton');
-            } else if (dominoBox) {
-                // Cliquer à gauche du domino sélectionné pour choisir la gauche
-                await page.mouse.click(dominoBox.x - 60, dominoBox.y + dominoBox.height / 2);
-                console.log('🖱️ Clic à gauche du domino pour sélectionner le côté gauche');
-            } else {
-                // Fallback clavier
-                await page.keyboard.press('ArrowLeft');
-                await delay(100);
-                await page.keyboard.press('Enter');
-                console.log('⌨️ Flèche gauche + Entrée');
+                sideClicked = true;
             }
-            await delay(500);
+            await sideBtnHandle.dispose();
         }
+        if (!sideClicked && dominoBox) {
+            // Cliquer à gauche du domino sélectionné pour choisir la gauche
+            await page.mouse.click(dominoBox.x - 60, dominoBox.y + dominoBox.height / 2);
+            console.log('🖱️ Clic à gauche du domino pour sélectionner le côté gauche');
+        } else if (!sideClicked) {
+            // Fallback clavier
+            await page.keyboard.press('ArrowLeft');
+            await delay(100);
+            await page.keyboard.press('Enter');
+            console.log('⌨️ Flèche gauche + Entrée');
+        }
+        await delay(500);
     }
+}
 
     // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
