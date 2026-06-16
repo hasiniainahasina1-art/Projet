@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - EXPERT + VNC)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - EXPERT + VNC + CHOIX CÔTÉ + ZOOM)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -58,13 +58,11 @@ async function handleChromeSaveDialog(page) {
 }
 
 // ============================================================
-// ZOOM NORMAL (VOIR TOUT L'ÉCRAN)
+// ZOOM POUR VOIR TOUT L'ÉCRAN (80% pour les petits écrans)
 // ============================================================
 async function adjustViewForDominoes(page) {
     await page.evaluate(() => {
-        // Zoom arrière pour voir tout le jeu (haut + plateau + bas)
         document.body.style.zoom = '0.8';
-        // Centrer le plateau verticalement
         const board = document.querySelector('.domino_board');
         if (board) {
             board.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -73,6 +71,7 @@ async function adjustViewForDominoes(page) {
         }
     });
 }
+
 // ============================================================
 // UTILITAIRES DOM
 // ============================================================
@@ -334,7 +333,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR
+// JOUER UN TOUR (AVEC GESTION DU CHOIX DE CÔTÉ)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -401,6 +400,7 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     // Double-clic sécurisé
     let success = false;
+    let dominoBox = null;
     for (let attempt = 0; attempt < 3; attempt++) {
         const dominoElement = await page.evaluateHandle(({ leftVal, rightVal }) => {
             const dominos = document.querySelectorAll('.mx_2.domino.cursor_pointer');
@@ -421,11 +421,47 @@ async function playTurn(page, previousHandCount, failedValues) {
         await delay(200);
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
         success = true;
+        dominoBox = box; // sauvegarder pour plus tard
         break;
     }
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
+    // Gérer le choix du côté si le domino correspond aux deux extrémités
+    if (ends) {
+        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+        if (matchBothSides) {
+            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
+            await delay(800);
+            // Essayer de trouver un bouton "Gauche" ou "Left"
+            const sideBtn = await page.evaluateHandle(() => {
+                const buttons = [...document.querySelectorAll('button')];
+                for (const btn of buttons) {
+                    const txt = btn.textContent.trim().toLowerCase();
+                    if (txt === 'gauche' || txt === 'left' || txt.includes('left') || txt === '←') return btn;
+                }
+                return null;
+            });
+            if (sideBtn) {
+                await sideBtn.click();
+                console.log('🖱️ Côté gauche sélectionné via bouton');
+            } else if (dominoBox) {
+                // Cliquer à gauche du domino sélectionné pour choisir la gauche
+                await page.mouse.click(dominoBox.x - 60, dominoBox.y + dominoBox.height / 2);
+                console.log('🖱️ Clic à gauche du domino pour sélectionner le côté gauche');
+            } else {
+                // Fallback clavier
+                await page.keyboard.press('ArrowLeft');
+                await delay(100);
+                await page.keyboard.press('Enter');
+                console.log('⌨️ Flèche gauche + Entrée');
+            }
+            await delay(500);
+        }
+    }
+
+    // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
     else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
