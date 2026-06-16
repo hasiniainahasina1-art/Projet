@@ -426,45 +426,50 @@ async function playTurn(page, previousHandCount, failedValues) {
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
     // Gérer le choix du côté
-    if (ends) {
-        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
-                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
-        if (matchBothSides) {
-            console.log('↔️ Choix de côté nécessaire');
-            await delay(1500);
+if (ends) {
+    const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                           (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+    if (matchBothSides) {
+        console.log('↔️ Choix de côté nécessaire');
+        await delay(1500);
 
-            const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
-            const unknownSetEval = getUnknownSet(myHandValues);
-            const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+        const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
+        const unknownSetEval = getUnknownSet(myHandValues);
+        const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
 
-            const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-            const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+        const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+        const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
 
-            console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
-            const chooseLeft = leftScore >= rightScore;
-            console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
+        console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
+        const chooseLeft = leftScore >= rightScore;
+        console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
-            // Cliquer sur le premier ou dernier domino du plateau
-            const targetSelector = chooseLeft 
-                ? '.domino_board .domino:first-child' 
-                : '.domino_board .domino:last-child';
+        // Cliquer sur la moitié gauche ou droite du domino waiting_confirmation
+        const halfSelector = chooseLeft 
+            ? '.domino.waiting_confirmation .domino_left'   // moitié gauche
+            : '.domino.waiting_confirmation .domino_right';  // moitié droite
 
-            const targetDomino = await page.$(targetSelector);
-            if (targetDomino) {
-                const box = await targetDomino.boundingBox();
-                if (box) {
-                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                    console.log(`🖱️ Clic sur domino ${chooseLeft ? 'gauche' : 'droite'}`);
-                }
-            } else {
-                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-                await delay(300);
-                await page.keyboard.press('Enter');
-                console.log('⌨️ Clavier fallback');
+        console.log(`   → Clic sur : ${halfSelector}`);
+
+        const halfElement = await page.$(halfSelector);
+        if (halfElement) {
+            const box = await halfElement.boundingBox();
+            if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                console.log(`🖱️ Clic sur moitié ${chooseLeft ? 'gauche' : 'droite'} du domino`);
             }
-            await delay(500);
         }
+
+        // Si le clic sur la moitié échoue, essayer le clavier
+        if (!halfElement) {
+            console.log('⌨️ Fallback clavier');
+            await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
+            await delay(200);
+            await page.keyboard.press('Enter');
+        }
+        await delay(500);
     }
+}
 
     // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
