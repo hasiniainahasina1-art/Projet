@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - EXPERT + VNC + CHOIX CÔTÉ CLAVIER)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION AVEC DÉBOGAGE CHOIX CÔTÉ)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -333,7 +333,34 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (AVEC GESTION DU CHOIX DE CÔTÉ PAR CLAVIER)
+// FONCTION DE DÉBOGAGE : capture le HTML autour du plateau
+// ============================================================
+async function dumpBoardHTML(page) {
+    try {
+        const html = await page.evaluate(() => {
+            const board = document.querySelector('.domino_board');
+            if (!board) return 'Plateau non trouvé';
+            // Récupérer le HTML du plateau et de ses parents proches
+            const parent = board.parentElement ? board.parentElement.outerHTML.substring(0, 2000) : 'pas de parent';
+            const boardHTML = board.outerHTML.substring(0, 2000);
+            // Chercher spécifiquement les éléments avec '?' ou 'choice'
+            const questionMarks = [...document.querySelectorAll('.domino_board [class*="choice"], .domino_board [class*="?"], .domino_board .domino_left, .domino_board .domino_right')]
+                .map(el => el.outerHTML.substring(0, 200));
+            return {
+                boardHTML,
+                parentHTML: parent,
+                questionMarks: questionMarks.length > 0 ? questionMarks : 'aucun point d\'interrogation trouvé'
+            };
+        });
+        console.log('📸 HTML DU PLATEAU (débogage choix côté) :');
+        console.log(JSON.stringify(html, null, 2));
+    } catch (e) {
+        console.log('Erreur capture HTML :', e.message);
+    }
+}
+
+// ============================================================
+// JOUER UN TOUR (AVEC DÉBOGAGE CHOIX CÔTÉ)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -427,14 +454,18 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
-    // Gérer le choix du côté avec le clavier
+    // Gérer le choix du côté si le domino correspond aux deux extrémités
     if (ends) {
         const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
                                (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
         if (matchBothSides) {
             console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
-            await delay(1000);
+            await delay(1500); // laisser le temps à l'interface d'apparaître
 
+            // 🛑 Capturer le HTML pour déboguer
+            await dumpBoardHTML(page);
+
+            // Calculer les scores pour décider du meilleur côté
             const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
             const unknownSetEval = getUnknownSet(myHandValues);
             const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
@@ -444,14 +475,46 @@ async function playTurn(page, previousHandCount, failedValues) {
 
             console.log(`   Score côté gauche : ${leftScore.toFixed(1)}`);
             console.log(`   Score côté droit  : ${rightScore.toFixed(1)}`);
-
             const chooseLeft = leftScore >= rightScore;
             console.log(`   → Choix stratégique : ${chooseLeft ? 'gauche' : 'droite'}`);
 
-            await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-            await delay(300);
-            await page.keyboard.press('Enter');
-            console.log(`⌨️ Flèche ${chooseLeft ? 'gauche' : 'droite'} + Entrée`);
+            // Essayer de trouver des éléments cliquables pour le choix (points d'interrogation, boutons)
+            const sideElement = await page.evaluateHandle((left) => {
+                // Chercher des éléments avec des classes spécifiques
+                const selectors = [
+                    '.choice-left', '.choice-right', '.left-choice', '.right-choice',
+                    '.domino_left.choice', '.domino_right.choice',
+                    '[class*="choice"]', '[class*="side"]',
+                    '.domino_board .domino:first-child .domino_left', // point d'interrogation à gauche ?
+                    '.domino_board .domino:last-child .domino_right'  // point d'interrogation à droite ?
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.offsetParent) return el;
+                }
+                // Si rien trouvé, chercher un élément avec '?' dans le texte
+                const all = [...document.querySelectorAll('.domino_board *')];
+                for (const el of all) {
+                    if (el.textContent.trim() === '?' && el.offsetParent) return el;
+                }
+                return null;
+            }, chooseLeft);
+
+            if (sideElement) {
+                const el = sideElement.asElement();
+                if (el) {
+                    await el.click();
+                    console.log('🖱️ Clic sur élément de choix de côté');
+                }
+                await sideElement.dispose();
+            } else {
+                // Fallback clavier
+                console.log('⌨️ Aucun élément trouvé, utilisation clavier');
+                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
+                await delay(300);
+                await page.keyboard.press('Enter');
+                console.log(`⌨️ Flèche ${chooseLeft ? 'gauche' : 'droite'} + Entrée`);
+            }
             await delay(500);
         }
     }
