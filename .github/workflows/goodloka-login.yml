@@ -48,22 +48,19 @@ jobs:
           sleep 2
           echo "✅ VNC démarré sur le port 5900"
 
-      - name: Installer ngrok
+      - name: Exposer VNC via pinggy (gratuit)
         run: |
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-          sudo apt-get update -qq && sudo apt-get install -y -qq ngrok
-
-      - name: Exposer VNC via ngrok
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          ngrok config add-authtoken $NGROK_AUTH_TOKEN
-          ngrok tcp 5900 --log=stdout &
-          sleep 5
+          ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:5900 a.pinggy.io > /tmp/pinggy.txt 2>&1 &
+          sleep 8
           echo ""
+          echo "=============================================="
           echo "🔗 URL VNC :"
-          curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"tcp://[^"]*"' | head -1
+          grep -oE '[a-zA-Z0-9]+\.pinggy\.link' /tmp/pinggy.txt | head -1
+          echo ""
+          echo "Pour te connecter avec VNC Viewer :"
+          echo "Adresse : (copie l'adresse ci-dessus)"
+          echo "Port    : 443"
+          echo "=============================================="
           echo ""
 
       - name: Lancer le bot
