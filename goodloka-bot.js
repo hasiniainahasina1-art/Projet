@@ -426,79 +426,72 @@ async function playTurn(page, previousHandCount, failedValues) {
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
     // Gérer le choix du côté avec DRAG & DROP + FALLBACK CLAVIER
-    if (ends) {
-        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
-                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
-        if (matchBothSides) {
-            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
-            await delay(1500);
+                // Gérer le choix du côté
+if (ends) {
+    const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                           (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+    if (matchBothSides) {
+        console.log('↔️ Choix de côté nécessaire');
+        await delay(1500);
 
-            const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
-            const unknownSetEval = getUnknownSet(myHandValues);
-            const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+        // Calculer les scores pour décider
+        const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
+        const unknownSetEval = getUnknownSet(myHandValues);
+        const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+        const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+        const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+        const chooseLeft = leftScore >= rightScore;
+        console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
-            const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-            const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+        // Chercher les dominos du plateau qui ont une classe spéciale (surlignés pour le choix)
+        const clickableDominoes = await page.evaluate(() => {
+            const board = document.querySelector('.domino_board');
+            if (!board) return [];
+            // Chercher tous les dominos qui ont une classe autre que "domino" simple
+            const allDominoes = [...board.querySelectorAll('.domino')];
+            return allDominoes.map((d, i) => ({
+                index: i,
+                classes: d.className,
+                dataIndex: d.getAttribute('data-index'),
+                isFirst: i === 0,
+                isLast: i === allDominoes.length - 1,
+                // Vérifier si le domino a une classe spéciale
+                hasSpecialClass: d.className !== 'domino' && d.className !== 'domino waiting_confirmation'
+            }));
+        });
+        
+        console.log('   Dominos du plateau :', JSON.stringify(clickableDominoes));
 
-            console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
-            const chooseLeft = leftScore >= rightScore;
-            console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
+        // Stratégie : cliquer sur le premier ou dernier domino selon le choix
+        const sideSelector = chooseLeft 
+            ? '.domino_board .domino:first-child' 
+            : '.domino_board .domino:last-child';
 
-            let sideChosen = false;
-
-            // Méthode 1 : DRAG & DROP
-            if (!sideChosen) {
-                const waitingDomino = await page.$('.domino.waiting_confirmation');
-                if (waitingDomino) {
-                    const box = await waitingDomino.boundingBox();
-                    if (box) {
-                        const startX = box.x + box.width / 2;
-                        const startY = box.y + box.height / 2;
-                        const targetX = chooseLeft ? startX - 150 : startX + 150;
-                        
-                        await page.mouse.move(startX, startY);
-                        await page.mouse.down();
-                        await delay(200);
-                        
-                        // Déplacer par étapes pour simuler un vrai drag
-                        const steps = 10;
-                        for (let i = 1; i <= steps; i++) {
-                            const x = startX + (targetX - startX) * (i / steps);
-                            await page.mouse.move(x, startY);
-                            await delay(30);
-                        }
-                        
-                        await page.mouse.up();
-                        console.log(`🖱️ Drag & drop vers ${chooseLeft ? 'gauche' : 'droite'}`);
-                        sideChosen = true;
-                        await delay(500);
-                    }
+        // Essayer d'abord les dominos avec classe spéciale
+        let targetSelector = sideSelector;
+        if (clickableDominoes.length > 0) {
+            const specials = clickableDominoes.filter(d => d.hasSpecialClass);
+            if (specials.length > 0) {
+                // Prendre le premier spécial pour gauche, dernier pour droite
+                const chosenSpecial = chooseLeft ? specials[0] : specials[specials.length - 1];
+                if (chosenSpecial) {
+                    targetSelector = `.domino_board .domino:nth-child(${chosenSpecial.index + 1})`;
                 }
             }
-
-            // Méthode 2 : Flèche + Entrée (fallback)
-            if (!sideChosen) {
-                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-                await delay(300);
-                await page.keyboard.press('Enter');
-                console.log('⌨️ Flèche + Entrée (fallback)');
-                sideChosen = true;
-                await delay(500);
-            }
-
-            // Méthode 3 : Flèche + Espace (fallback)
-            if (!sideChosen) {
-                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-                await delay(300);
-                await page.keyboard.press('Space');
-                console.log('⌨️ Flèche + Espace (fallback)');
-                sideChosen = true;
-                await delay(500);
-            }
-
-            await delay(500);
         }
+
+        console.log(`   → Clic sur : ${targetSelector}`);
+        const targetDomino = await page.$(targetSelector);
+        if (targetDomino) {
+            const box = await targetDomino.boundingBox();
+            if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                console.log(`🖱️ Clic sur domino pour choisir le côté`);
+            }
+        }
+        await delay(500);
     }
+}
 
     // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
