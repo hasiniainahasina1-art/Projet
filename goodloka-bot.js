@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - CHOIX CÔTÉ CORRIGÉ)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - CHOIX CÔTÉ DRAG & DROP)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -333,7 +333,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (CHOIX CÔTÉ CORRIGÉ)
+// JOUER UN TOUR (AVEC DRAG & DROP POUR LE CHOIX DE CÔTÉ)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -425,38 +425,81 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
+    // Gérer le choix du côté avec DRAG & DROP + FALLBACK CLAVIER
+    if (ends) {
+        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+        if (matchBothSides) {
+            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
+            await delay(1500);
 
-// Gérer le choix du côté avec le clavier UNIQUEMENT
-if (ends) {
-    const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
-                           (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
-    if (matchBothSides) {
-        console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
-        await delay(1500); // laisser l'interface réagir
+            const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
+            const unknownSetEval = getUnknownSet(myHandValues);
+            const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
 
-        // Calculer les scores
-        const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
-        const unknownSetEval = getUnknownSet(myHandValues);
-        const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+            const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+            const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
 
-        const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-        const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+            console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
+            const chooseLeft = leftScore >= rightScore;
+            console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
-        console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
-        const chooseLeft = leftScore >= rightScore;
-        console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
+            let sideChosen = false;
 
-        // Envoyer la flèche correspondante
-        await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
-        console.log(`⌨️ Flèche ${chooseLeft ? 'gauche' : 'droite'} envoyée`);
-        await delay(500);
-        
-        // Appuyer sur Entrée pour valider le choix de côté
-        await page.keyboard.press('Enter');
-        console.log('⌨️ Entrée pour valider le côté');
-        await delay(500);
+            // Méthode 1 : DRAG & DROP
+            if (!sideChosen) {
+                const waitingDomino = await page.$('.domino.waiting_confirmation');
+                if (waitingDomino) {
+                    const box = await waitingDomino.boundingBox();
+                    if (box) {
+                        const startX = box.x + box.width / 2;
+                        const startY = box.y + box.height / 2;
+                        const targetX = chooseLeft ? startX - 150 : startX + 150;
+                        
+                        await page.mouse.move(startX, startY);
+                        await page.mouse.down();
+                        await delay(200);
+                        
+                        // Déplacer par étapes pour simuler un vrai drag
+                        const steps = 10;
+                        for (let i = 1; i <= steps; i++) {
+                            const x = startX + (targetX - startX) * (i / steps);
+                            await page.mouse.move(x, startY);
+                            await delay(30);
+                        }
+                        
+                        await page.mouse.up();
+                        console.log(`🖱️ Drag & drop vers ${chooseLeft ? 'gauche' : 'droite'}`);
+                        sideChosen = true;
+                        await delay(500);
+                    }
+                }
+            }
+
+            // Méthode 2 : Flèche + Entrée (fallback)
+            if (!sideChosen) {
+                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
+                await delay(300);
+                await page.keyboard.press('Enter');
+                console.log('⌨️ Flèche + Entrée (fallback)');
+                sideChosen = true;
+                await delay(500);
+            }
+
+            // Méthode 3 : Flèche + Espace (fallback)
+            if (!sideChosen) {
+                await page.keyboard.press(chooseLeft ? 'ArrowLeft' : 'ArrowRight');
+                await delay(300);
+                await page.keyboard.press('Space');
+                console.log('⌨️ Flèche + Espace (fallback)');
+                sideChosen = true;
+                await delay(500);
+            }
+
+            await delay(500);
+        }
     }
-}
+
     // Bouton Jouer
     const jouerBtn = await findButtonByText(page, 'Jouer');
     if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
