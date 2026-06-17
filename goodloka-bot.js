@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - CHOIX CÔTÉ DRAG & DROP)
+// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - CHOIX CÔTÉ PAR DOUBLE-CLIC EXTRÉMITÉ)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -333,7 +333,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (AVEC DRAG & DROP POUR LE CHOIX DE CÔTÉ)
+// JOUER UN TOUR (AVEC CHOIX CÔTÉ PAR DOUBLE-CLIC EXTRÉMITÉ)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -425,78 +425,65 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
-    // Gérer le choix du côté avec DRAG & DROP + FALLBACK CLAVIER
-                // Gérer le choix du côté
-if (ends) {
-    const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
-                           (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
-    if (matchBothSides) {
-        console.log('↔️ Choix de côté nécessaire');
-        await delay(1500);
+    // Gérer le choix du côté - MÊME MÉTHODE QUE POUR LANCER UN DOMINO
+    if (ends) {
+        const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
+                               (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
+        if (matchBothSides) {
+            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
+            await delay(1000); // Attendre 1 seconde
 
-        // Calculer les scores pour décider
-        const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
-        const unknownSetEval = getUnknownSet(myHandValues);
-        const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
-        const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-        const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-        const chooseLeft = leftScore >= rightScore;
-        console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
+            // Calculer les scores pour décider
+            const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
+            const unknownSetEval = getUnknownSet(myHandValues);
+            const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+            const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+            const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
+            const chooseLeft = leftScore >= rightScore;
+            console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
+            console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
-        // Chercher les dominos du plateau qui ont une classe spéciale (surlignés pour le choix)
-        const clickableDominoes = await page.evaluate(() => {
-            const board = document.querySelector('.domino_board');
-            if (!board) return [];
-            // Chercher tous les dominos qui ont une classe autre que "domino" simple
-            const allDominoes = [...board.querySelectorAll('.domino')];
-            return allDominoes.map((d, i) => ({
-                index: i,
-                classes: d.className,
-                dataIndex: d.getAttribute('data-index'),
-                isFirst: i === 0,
-                isLast: i === allDominoes.length - 1,
-                // Vérifier si le domino a une classe spéciale
-                hasSpecialClass: d.className !== 'domino' && d.className !== 'domino waiting_confirmation'
-            }));
-        });
-        
-        console.log('   Dominos du plateau :', JSON.stringify(clickableDominoes));
+            // Étape 8 : Sélectionner l'extrémité choisie
+            const sideSelector = chooseLeft 
+                ? '.domino_board .domino:first-child'   // premier domino = gauche
+                : '.domino_board .domino:last-child';    // dernier domino = droite
 
-        // Stratégie : cliquer sur le premier ou dernier domino selon le choix
-        const sideSelector = chooseLeft 
-            ? '.domino_board .domino:first-child' 
-            : '.domino_board .domino:last-child';
+            console.log(`   → Sélecteur : ${sideSelector}`);
 
-        // Essayer d'abord les dominos avec classe spéciale
-        let targetSelector = sideSelector;
-        if (clickableDominoes.length > 0) {
-            const specials = clickableDominoes.filter(d => d.hasSpecialClass);
-            if (specials.length > 0) {
-                // Prendre le premier spécial pour gauche, dernier pour droite
-                const chosenSpecial = chooseLeft ? specials[0] : specials[specials.length - 1];
-                if (chosenSpecial) {
-                    targetSelector = `.domino_board .domino:nth-child(${chosenSpecial.index + 1})`;
+            // Attendre 1 seconde avant de récupérer la position
+            await delay(1000);
+
+            // Étape 5 (bis) : Récupérer la position exacte de l'extrémité
+            const sideDomino = await page.$(sideSelector);
+            if (sideDomino) {
+                const box = await sideDomino.boundingBox();
+                if (box) {
+                    console.log(`   → Position trouvée : x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
+                    
+                    // Étape 6 (bis) : Double-clic au centre de l'extrémité
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                    await delay(200);
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                    console.log(`🖱️ Double-clic sur l'extrémité ${chooseLeft ? 'gauche' : 'droite'}`);
+                } else {
+                    console.log('❌ Impossible de récupérer la position (boundingBox null)');
                 }
+            } else {
+                console.log('❌ Extrémité non trouvée');
             }
-        }
+            await delay(500);
 
-        console.log(`   → Clic sur : ${targetSelector}`);
-        const targetDomino = await page.$(targetSelector);
-        if (targetDomino) {
-            const box = await targetDomino.boundingBox();
-            if (box) {
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                console.log(`🖱️ Clic sur domino pour choisir le côté`);
+            // Étape 7/10 : Bouton Jouer ou Entrée
+            const jouerBtn = await findButtonByText(page, 'Jouer');
+            if (jouerBtn) {
+                await jouerBtn.click();
+                console.log('🖱️ Jouer');
+            } else {
+                await page.keyboard.press('Enter');
+                console.log('⏎ Entrée');
             }
         }
-        await delay(500);
     }
-}
-
-    // Bouton Jouer
-    const jouerBtn = await findButtonByText(page, 'Jouer');
-    if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
-    else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
 
     await delay(1500);
     return { status: 'played' };
