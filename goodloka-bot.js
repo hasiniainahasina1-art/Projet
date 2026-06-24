@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (CAPTURE DOMINOS ADVERSE AVANT MANCHE)
+// goodloka-bot.js – Bot de domino GoodLoka (CAPTURE DOMINOS ADVERSE AMÉLIORÉE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -165,33 +165,42 @@ async function getFullHand(page) {
 }
 
 // ============================================================
-// CAPTURE DES DOMINOS DE L'ADVERSAIRE DEPUIS LE HTML
+// CAPTURE DES DOMINOS DE L'ADVERSAIRE (AMÉLIORÉE)
 // ============================================================
 async function getOpponentDominoesFromHTML(page) {
     return await page.evaluate(() => {
-        const container = document.querySelector('.opponent_dominoes');
-        if (!container) return [];
-        const dominoElements = container.querySelectorAll('.domino, [class*="domino"]');
-        const dominoes = [];
-        for (const el of dominoElements) {
-            const leftVal = el.querySelector('.domino_left')?.dataset?.value 
-                         || el.querySelector('.domino_left')?.getAttribute('data-value')
-                         || el.querySelector('.half-left')?.dataset?.value
-                         || el.getAttribute('data-left');
-            const rightVal = el.querySelector('.domino_right')?.dataset?.value 
-                          || el.querySelector('.domino_right')?.getAttribute('data-value')
-                          || el.querySelector('.half-right')?.dataset?.value
-                          || el.getAttribute('data-right');
+        const opponentDominoes = [];
+        const boardDominoes = [...document.querySelectorAll('.domino_board .domino')];
+        const myDominoes = [...document.querySelectorAll('.mx_2.domino')];
+
+        // 1. Chercher tous les éléments avec attributs data-left/data-right/data-value
+        const allElements = document.querySelectorAll('[data-left], [data-right], [data-value]');
+        for (const el of allElements) {
+            if (el.offsetParent === null) continue;
+            if (boardDominoes.includes(el) || myDominoes.includes(el)) continue;
+            const leftVal = el.getAttribute('data-left') || el.querySelector('.domino_left')?.dataset?.value 
+                         || el.querySelector('.half-left')?.dataset?.value;
+            const rightVal = el.getAttribute('data-right') || el.querySelector('.domino_right')?.dataset?.value 
+                          || el.querySelector('.half-right')?.dataset?.value;
             if (leftVal && rightVal) {
-                dominoes.push(`${leftVal}:${rightVal}`);
-            } else {
-                const text = el.textContent.trim();
-                if (text && text.includes(':')) {
-                    dominoes.push(text);
+                opponentDominoes.push(`${leftVal}:${rightVal}`);
+            }
+        }
+
+        // 2. Si rien trouvé, parcourir tous les .domino hors plateau/main
+        if (opponentDominoes.length === 0) {
+            const allDominoElements = document.querySelectorAll('.domino');
+            for (const el of allDominoElements) {
+                if (boardDominoes.includes(el) || myDominoes.includes(el)) continue;
+                const leftVal = el.querySelector('.domino_left')?.dataset?.value || el.getAttribute('data-left');
+                const rightVal = el.querySelector('.domino_right')?.dataset?.value || el.getAttribute('data-right');
+                if (leftVal && rightVal) {
+                    opponentDominoes.push(`${leftVal}:${rightVal}`);
                 }
             }
         }
-        return dominoes;
+
+        return opponentDominoes;
     });
 }
 
@@ -365,7 +374,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (AVEC CAPTURE DOMINOS ADVERSE)
+// JOUER UN TOUR
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -397,18 +406,22 @@ async function playTurn(page, previousHandCount, failedValues) {
         console.log(`│ Extrémités : ${ends.left} ← → ${ends.right}`);
     }
     
-    // Capturer les dominos adverses depuis le HTML
+    // Capture améliorée des dominos adverses
     const opponentDominoes = await getOpponentDominoesFromHTML(page);
     if (opponentDominoes.length > 0) {
         console.log('├─────────────────────────────────────────────┤');
         console.log('│ 🕵️ DOMINOS ADVERSE (lus dans le HTML)      │');
         opponentDominoes.forEach(d => console.log(`│   [${d}]`));
-        // Mettre à jour la connaissance des dominos adverses
         for (const d of opponentDominoes) {
             knownOpponentDominoes.add(d);
         }
     } else {
-        console.log('│ 🕵️ Impossible de lire les dominos adverses');
+        console.log('│ 🕵️ Aucun domino adverse détecté dans le HTML');
+        // Vérifier l'existence du conteneur
+        const containerExists = await page.evaluate(() => {
+            return !!document.querySelector('.opponent_dominoes');
+        });
+        console.log(`│   (conteneur .opponent_dominoes existe : ${containerExists})`);
     }
     
     const opponentCount = await page.evaluate(() => {
@@ -587,7 +600,7 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
 }
 
 // ============================================================
-// JOUER UNE MANCHE (avec capture initiale des dominos adverses)
+// JOUER UNE MANCHE
 // ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (EXPERT)`);
@@ -599,7 +612,7 @@ async function playOneRound(page, roundNumber) {
     let failedValues = new Set();
     let previousEnds = null;
 
-    // Capture initiale des dominos adverses avant le premier tour
+    // Capture initiale des dominos adverses
     const initialOpponentDominoes = await getOpponentDominoesFromHTML(page);
     if (initialOpponentDominoes.length > 0) {
         console.log('🕵️ DOMINOS ADVERSE EN DÉBUT DE MANCHE :');
