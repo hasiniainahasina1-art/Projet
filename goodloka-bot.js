@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (VERSION FINALE - CHOIX CÔTÉ PAR DOUBLE-CLIC EXTRÉMITÉ)
+// goodloka-bot.js – Bot de domino GoodLoka (CAPTURE DOMINOS ADVERSE AVANT MANCHE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -165,6 +165,37 @@ async function getFullHand(page) {
 }
 
 // ============================================================
+// CAPTURE DES DOMINOS DE L'ADVERSAIRE DEPUIS LE HTML
+// ============================================================
+async function getOpponentDominoesFromHTML(page) {
+    return await page.evaluate(() => {
+        const container = document.querySelector('.opponent_dominoes');
+        if (!container) return [];
+        const dominoElements = container.querySelectorAll('.domino, [class*="domino"]');
+        const dominoes = [];
+        for (const el of dominoElements) {
+            const leftVal = el.querySelector('.domino_left')?.dataset?.value 
+                         || el.querySelector('.domino_left')?.getAttribute('data-value')
+                         || el.querySelector('.half-left')?.dataset?.value
+                         || el.getAttribute('data-left');
+            const rightVal = el.querySelector('.domino_right')?.dataset?.value 
+                          || el.querySelector('.domino_right')?.getAttribute('data-value')
+                          || el.querySelector('.half-right')?.dataset?.value
+                          || el.getAttribute('data-right');
+            if (leftVal && rightVal) {
+                dominoes.push(`${leftVal}:${rightVal}`);
+            } else {
+                const text = el.textContent.trim();
+                if (text && text.includes(':')) {
+                    dominoes.push(text);
+                }
+            }
+        }
+        return dominoes;
+    });
+}
+
+// ============================================================
 // SUIVI DES DOMINOS JOUÉS
 // ============================================================
 let playedDominoes = new Set();
@@ -191,6 +222,7 @@ async function updatePlayedDominoes(page) {
 // STRATÉGIE EXPERT
 // ============================================================
 let opponentPassedValues = new Set();
+let knownOpponentDominoes = new Set();
 
 function allDominoes() {
     const all = [];
@@ -200,7 +232,7 @@ function allDominoes() {
 
 function getUnknownSet(myHandValues) {
     const all = allDominoes();
-    return new Set(all.filter(d => !playedDominoes.has(d.value) && !myHandValues.has(d.value)).map(d => d.value));
+    return new Set(all.filter(d => !playedDominoes.has(d.value) && !myHandValues.has(d.value) && !knownOpponentDominoes.has(d.value)).map(d => d.value));
 }
 
 function getOpponentPossibleHand(unknownSet) {
@@ -333,7 +365,7 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (AVEC CHOIX CÔTÉ PAR DOUBLE-CLIC EXTRÉMITÉ)
+// JOUER UN TOUR (AVEC CAPTURE DOMINOS ADVERSE)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -365,6 +397,20 @@ async function playTurn(page, previousHandCount, failedValues) {
         console.log(`│ Extrémités : ${ends.left} ← → ${ends.right}`);
     }
     
+    // Capturer les dominos adverses depuis le HTML
+    const opponentDominoes = await getOpponentDominoesFromHTML(page);
+    if (opponentDominoes.length > 0) {
+        console.log('├─────────────────────────────────────────────┤');
+        console.log('│ 🕵️ DOMINOS ADVERSE (lus dans le HTML)      │');
+        opponentDominoes.forEach(d => console.log(`│   [${d}]`));
+        // Mettre à jour la connaissance des dominos adverses
+        for (const d of opponentDominoes) {
+            knownOpponentDominoes.add(d);
+        }
+    } else {
+        console.log('│ 🕵️ Impossible de lire les dominos adverses');
+    }
+    
     const opponentCount = await page.evaluate(() => {
         const all = [...document.querySelectorAll('.domino')];
         const board = [...document.querySelectorAll('.domino_board .domino')];
@@ -372,7 +418,7 @@ async function playTurn(page, previousHandCount, failedValues) {
         return all.filter(d => !board.includes(d) && !mine.includes(d)).length;
     });
     
-    console.log(`│ Dominos adversaire : ${opponentCount}`);
+    console.log(`│ Dominos adversaire (comptés) : ${opponentCount}`);
     console.log(`│ Mes dominos : ${fullHand.length}`);
     console.log('├─────────────────────────────────────────────┤');
     console.log('│ 🃏 MA MAIN                                  │');
@@ -425,65 +471,47 @@ async function playTurn(page, previousHandCount, failedValues) {
 
     if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
 
-    // Gérer le choix du côté - MÊME MÉTHODE QUE POUR LANCER UN DOMINO
+    // Gérer le choix du côté
     if (ends) {
         const matchBothSides = (chosen.leftVal === ends.left && chosen.rightVal === ends.right) ||
                                (chosen.leftVal === ends.right && chosen.rightVal === ends.left);
         if (matchBothSides) {
-            console.log('↔️ Choix de côté nécessaire (domino correspond aux deux extrémités)');
-            await delay(1000); // Attendre 1 seconde
+            console.log('↔️ Choix de côté nécessaire');
+            await delay(1000);
 
-            // Calculer les scores pour décider
             const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
             const unknownSetEval = getUnknownSet(myHandValues);
             const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+
             const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
             const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
             const chooseLeft = leftScore >= rightScore;
-            console.log(`   Score gauche : ${leftScore.toFixed(1)} | Score droit : ${rightScore.toFixed(1)}`);
             console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
-            // Étape 8 : Sélectionner l'extrémité choisie
             const sideSelector = chooseLeft 
-                ? '.domino_board .domino:first-child'   // premier domino = gauche
-                : '.domino_board .domino:last-child';    // dernier domino = droite
+                ? '.domino_board .domino:first-child' 
+                : '.domino_board .domino:last-child';
 
-            console.log(`   → Sélecteur : ${sideSelector}`);
-
-            // Attendre 1 seconde avant de récupérer la position
             await delay(1000);
 
-            // Étape 5 (bis) : Récupérer la position exacte de l'extrémité
             const sideDomino = await page.$(sideSelector);
             if (sideDomino) {
                 const box = await sideDomino.boundingBox();
                 if (box) {
-                    console.log(`   → Position trouvée : x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`);
-                    
-                    // Étape 6 (bis) : Double-clic au centre de l'extrémité
                     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
                     await delay(200);
                     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
                     console.log(`🖱️ Double-clic sur l'extrémité ${chooseLeft ? 'gauche' : 'droite'}`);
-                } else {
-                    console.log('❌ Impossible de récupérer la position (boundingBox null)');
                 }
-            } else {
-                console.log('❌ Extrémité non trouvée');
             }
             await delay(500);
-
-            // Étape 7/10 : Bouton Jouer ou Entrée
-            const jouerBtn = await findButtonByText(page, 'Jouer');
-            if (jouerBtn) {
-                await jouerBtn.click();
-                console.log('🖱️ Jouer');
-            } else {
-                await page.keyboard.press('Enter');
-                console.log('⏎ Entrée');
-            }
         }
     }
+
+    // Bouton Jouer
+    const jouerBtn = await findButtonByText(page, 'Jouer');
+    if (jouerBtn) { await jouerBtn.click(); console.log('🖱️ Jouer'); }
+    else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
 
     await delay(1500);
     return { status: 'played' };
@@ -559,16 +587,27 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
 }
 
 // ============================================================
-// JOUER UNE MANCHE
+// JOUER UNE MANCHE (avec capture initiale des dominos adverses)
 // ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (EXPERT)`);
     await delay(3000);
     playedDominoes.clear();
     opponentPassedValues.clear();
+    knownOpponentDominoes.clear();
     let turn = 1, consecutiveMisses = 0;
     let failedValues = new Set();
     let previousEnds = null;
+
+    // Capture initiale des dominos adverses avant le premier tour
+    const initialOpponentDominoes = await getOpponentDominoesFromHTML(page);
+    if (initialOpponentDominoes.length > 0) {
+        console.log('🕵️ DOMINOS ADVERSE EN DÉBUT DE MANCHE :');
+        initialOpponentDominoes.forEach(d => {
+            console.log(`   [${d}]`);
+            knownOpponentDominoes.add(d);
+        });
+    }
 
     while (true) {
         const board = await page.$('.domino_board');
