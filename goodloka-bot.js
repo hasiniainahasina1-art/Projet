@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (CAPTURE DOMINOS ADVERSE FINALE)
+// goodloka-bot.js – Bot de domino GoodLoka (STRATÉGIE EXPERT AMÉLIORÉE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -165,55 +165,10 @@ async function getFullHand(page) {
 }
 
 // ============================================================
-// CAPTURE AMÉLIORÉE DES DOMINOS DE L'ADVERSAIRE
-// ============================================================
-async function getOpponentDominoesFromHTML(page) {
-    return await page.evaluate(() => {
-        const boardDominoes = [...document.querySelectorAll('.domino_board .domino')];
-        const myDominoes = [...document.querySelectorAll('.mx_2.domino')];
-        const dominoes = [];
-
-        // Parcourir TOUS les éléments du DOM avec data-left/data-right
-        const allCandidates = document.querySelectorAll('[data-left], [data-right]');
-        for (const el of allCandidates) {
-            // Ignorer les éléments cachés
-            if (el.offsetParent === null) continue;
-            // Ignorer les éléments du plateau ou de notre main
-            if (boardDominoes.includes(el) || myDominoes.includes(el)) continue;
-            // Ignorer les barres de progression et autres widgets Vuetify
-            if (el.classList.contains('v-progress-circular')) continue;
-
-            const leftVal = el.getAttribute('data-left') || el.querySelector('.half-left')?.getAttribute('data-value');
-            const rightVal = el.getAttribute('data-right') || el.querySelector('.half-right')?.getAttribute('data-value');
-            if (leftVal && rightVal) {
-                dominoes.push(`${leftVal}:${rightVal}`);
-            }
-        }
-
-        // Si rien trouvé, chercher dans les conteneurs spécifiques (opponent_dominoes, player-hand, etc.)
-        if (dominoes.length === 0) {
-            const containers = document.querySelectorAll('.opponent_dominoes, .opponent-hand, .player-hand, .domino-hand');
-            for (const container of containers) {
-                const children = container.querySelectorAll('[data-left], [data-right]');
-                for (const el of children) {
-                    if (boardDominoes.includes(el) || myDominoes.includes(el)) continue;
-                    const leftVal = el.getAttribute('data-left');
-                    const rightVal = el.getAttribute('data-right');
-                    if (leftVal && rightVal) {
-                        dominoes.push(`${leftVal}:${rightVal}`);
-                    }
-                }
-            }
-        }
-
-        return dominoes;
-    });
-}
-
-// ============================================================
 // SUIVI DES DOMINOS JOUÉS
 // ============================================================
 let playedDominoes = new Set();
+let opponentPassedValues = new Set();
 
 function normalize(v1, v2) {
     const a = parseInt(v1), b = parseInt(v2);
@@ -234,22 +189,21 @@ async function updatePlayedDominoes(page) {
 }
 
 // ============================================================
-// STRATÉGIE EXPERT
+// STRATÉGIE EXPERT AMÉLIORÉE
 // ============================================================
-let opponentPassedValues = new Set();
-let knownOpponentDominoes = new Set();
-
 function allDominoes() {
     const all = [];
     for (let i = 0; i <= 6; i++) for (let j = i; j <= 6; j++) all.push({ left: i, right: j, value: `${i}:${j}` });
     return all;
 }
 
+// Ensemble des dominos encore inconnus (ni joués, ni dans notre main)
 function getUnknownSet(myHandValues) {
     const all = allDominoes();
-    return new Set(all.filter(d => !playedDominoes.has(d.value) && !myHandValues.has(d.value) && !knownOpponentDominoes.has(d.value)).map(d => d.value));
+    return new Set(all.filter(d => !playedDominoes.has(d.value) && !myHandValues.has(d.value)).map(d => d.value));
 }
 
+// Retourne les dominos possibles pour l'adversaire en tenant compte des passes
 function getOpponentPossibleHand(unknownSet) {
     const possible = new Set();
     for (const dom of unknownSet) {
@@ -259,105 +213,86 @@ function getOpponentPossibleHand(unknownSet) {
     return possible;
 }
 
-function countRemainingInUnknown(value, unknownSet) {
-    let count = 0;
-    for (const dom of unknownSet) {
+// Vérifie si l'adversaire possède un domino avec une valeur donnée
+function opponentHasValue(value, opponentPossibleHand) {
+    for (const dom of opponentPossibleHand) {
         const [a, b] = dom.split(':').map(Number);
-        if (a === value || b === value) count++;
+        if (a === value || b === value) return true;
     }
-    return count;
+    return false;
 }
 
-function getFamilyControl(myHandValues, unknownSet) {
-    const valueCount = {};
-    for (let v = 0; v <= 6; v++) {
-        let myCount = 0, totalLeft = 0;
-        for (const dom of myHandValues) {
-            const [a, b] = dom.split(':').map(Number);
-            if (a === v || b === v) myCount++;
-        }
-        for (const dom of unknownSet) {
-            const [a, b] = dom.split(':').map(Number);
-            if (a === v || b === v) totalLeft++;
-        }
-        valueCount[v] = { myCount, totalLeft, control: myCount / (totalLeft + myCount + 0.01) };
+// Score d'un coup (amélioré)
+function scoreMoveImproved(domino, ends, myHand, opponentPossibleHand) {
+    let score = 0;
+    const valLeft = parseInt(domino.leftVal);
+    const valRight = parseInt(domino.rightVal);
+    const endLeft = parseInt(ends.left);
+    const endRight = parseInt(ends.right);
+
+    // Vérifier si le domino correspond à au moins une extrémité
+    const matchesLeft = (valLeft === endLeft || valRight === endLeft);
+    const matchesRight = (valLeft === endRight || valRight === endRight);
+    if (!matchesLeft && !matchesRight) return -Infinity;
+
+    // Déterminer les nouvelles extrémités après avoir posé le domino
+    let newLeft = endLeft, newRight = endRight;
+    if (matchesLeft) {
+        newLeft = (valLeft === endLeft) ? valRight : valLeft;
+    } else if (matchesRight) {
+        newRight = (valLeft === endRight) ? valRight : valLeft;
     }
-    return valueCount;
-}
+    // Si les deux correspondent, on choisit le meilleur score dans les deux cas plus tard
+    // Pour l'instant on prend le premier (gauche) comme estimation
 
-function simulateMove(boardEnds, domino, side) {
-    const ends = { ...boardEnds };
-    const val = side === 'left' ? ends.left : ends.right;
-    if (domino.leftVal == val) ends[side] = domino.rightVal;
-    else ends[side] = domino.leftVal;
-    return ends;
-}
-
-function canWinNow(myHandPlayable, myHandAll) {
-    if (myHandPlayable.length === 1 && myHandAll.length === 1) return myHandPlayable[0];
-    return null;
-}
-
-function scoreMoveExpert(domino, ends, myHand, opponentPossibleHand, unknownSet, depth = 1) {
-    if (depth === 0) {
-        let s = 0;
-        const handSum = myHand.reduce((sum, d) => sum + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
-        s -= (handSum - (parseInt(domino.leftVal) + parseInt(domino.rightVal))) * 0.8;
-        if (domino.leftVal === domino.rightVal) s += 10;
-        return s;
+    // 1. Coup gagnant immédiat (on finit la manche)
+    if (myHand.length === 1) {
+        score += 10000; // énorme bonus
     }
 
-    let bestScore = -Infinity;
-    const placements = [];
-    if (domino.leftVal == ends.left || domino.rightVal == ends.left) placements.push('left');
-    if (domino.leftVal == ends.right || domino.rightVal == ends.right) placements.push('right');
-
-    for (const side of placements) {
-        const newEnds = simulateMove(ends, domino, side);
-        const newHand = myHand.filter(d => d.value !== domino.value);
-        let bonus = 0;
-
-        if (newEnds.left === newEnds.right) {
-            const remaining = [...opponentPossibleHand].filter(d => {
-                const [a, b] = d.split(':').map(Number);
-                return a === parseInt(newEnds.left) || b === parseInt(newEnds.left);
-            }).length;
-            if (remaining === 0) bonus += 200;
-            else if (remaining <= 1) bonus += 80;
-            else bonus += 30;
+    // 2. Blocage de l'adversaire
+    if (newLeft === newRight) {
+        const value = newLeft;
+        if (!opponentHasValue(value, opponentPossibleHand)) {
+            // L'adversaire ne peut pas jouer -> blocage parfait
+            score += 5000;
+        } else {
+            // Blocage partiel
+            score += 20;
         }
-
-        const family = getFamilyControl(new Set(newHand.map(d => d.value)), unknownSet);
-        const likelyAdv = Object.entries(family).filter(([_, v]) => v.control < 0.3).map(([val]) => val);
-        if (likelyAdv.includes(newEnds.left.toString())) bonus -= 20;
-        if (likelyAdv.includes(newEnds.right.toString())) bonus -= 20;
-
-        const newSum = newHand.reduce((s, d) => s + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
-        bonus -= newSum * 0.6;
-        if (domino.leftVal === domino.rightVal) bonus += 15;
-
-        if (depth > 0 && opponentPossibleHand.size > 0) {
-            const oppHand = [...opponentPossibleHand].slice(0, 20).map(d => {
-                const [a, b] = d.split(':').map(Number);
-                return { value: d, leftVal: a.toString(), rightVal: b.toString() };
-            });
-            let worstForMe = Infinity;
-            for (const oppDom of oppHand) {
-                if (oppDom.leftVal == newEnds.left || oppDom.rightVal == newEnds.left ||
-                    oppDom.leftVal == newEnds.right || oppDom.rightVal == newEnds.right) {
-                    const sc = scoreMoveExpert(oppDom, newEnds, newHand, new Set(), unknownSet, 0);
-                    if (sc < worstForMe) worstForMe = sc;
-                }
-            }
-            if (worstForMe !== Infinity) bonus += worstForMe * 0.3;
-        }
-        if (bonus > bestScore) bestScore = bonus;
     }
-    return bestScore;
+
+    // 3. Réduction de la somme de notre main (on veut se débarrasser des gros dominos)
+    const mySum = myHand.reduce((sum, d) => sum + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
+    const dominoSum = valLeft + valRight;
+    const remainingSum = mySum - dominoSum;
+    score -= remainingSum * 10; // malus proportionnel à la somme restante
+
+    // 4. Se débarrasser des doubles (ils sont difficiles à placer)
+    if (domino.leftVal === domino.rightVal) {
+        score += 50;
+    }
+
+    // 5. Éviter d'ouvrir une valeur que l'adversaire possède
+    if (opponentHasValue(newLeft, opponentPossibleHand)) {
+        score -= 30;
+    }
+    if (opponentHasValue(newRight, opponentPossibleHand)) {
+        score -= 30;
+    }
+
+    // 6. Bonus si on garde le contrôle de valeurs qu'on a en main
+    const myValues = new Set(myHand.map(d => d.leftVal).concat(myHand.map(d => d.rightVal)));
+    if (myValues.has(newLeft.toString())) score += 15;
+    if (myValues.has(newRight.toString())) score += 15;
+
+    return score;
 }
 
-function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
+// Choisir le meilleur domino avec la nouvelle fonction de score
+function chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll) {
     if (!ends) {
+        // Premier coup : jouer le plus gros double, sinon le plus lourd
         const doubles = hand.filter(d => d.leftVal === d.rightVal);
         if (doubles.length > 0) {
             doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal));
@@ -367,20 +302,44 @@ function chooseBestDomino(hand, ends, playedSet, unknownSet, myHandAll) {
         return hand[0];
     }
 
-    const opponentPossibleHand = getOpponentPossibleHand(unknownSet);
-    const winNow = canWinNow(hand, myHandAll);
-    if (winNow) { console.log('🏆 COUP GAGNANT DÉTECTÉ !'); return winNow; }
-
-    let best = null, bestScore = -Infinity;
-    for (const domino of hand) {
-        const s = scoreMoveExpert(domino, ends, hand, opponentPossibleHand, unknownSet, 2);
-        if (s > bestScore) { bestScore = s; best = domino; }
+    // Si on peut gagner maintenant, on le fait
+    if (hand.length === 1 && myHandAll.length === 1) {
+        console.log('🏆 COUP GAGNANT DÉTECTÉ !');
+        return hand[0];
     }
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const domino of hand) {
+        // Si le domino peut être posé des deux côtés, on teste les deux et on garde le meilleur
+        const canLeft = (domino.leftVal === ends.left || domino.rightVal === ends.left);
+        const canRight = (domino.leftVal === ends.right || domino.rightVal === ends.right);
+
+        let score = -Infinity;
+
+        if (canLeft && canRight) {
+            // Tester les deux placements
+            const scoreLeft = scoreMoveImproved(domino, ends, myHandAll, opponentPossibleHand);
+            // Pour tester le côté droit, on inverse temporairement les extrémités
+            const invertedEnds = { left: ends.right, right: ends.left };
+            const scoreRight = scoreMoveImproved(domino, invertedEnds, myHandAll, opponentPossibleHand);
+            score = Math.max(scoreLeft, scoreRight);
+        } else {
+            score = scoreMoveImproved(domino, ends, myHandAll, opponentPossibleHand);
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            best = domino;
+        }
+    }
+
     return best || hand[0];
 }
 
 // ============================================================
-// JOUER UN TOUR (AVEC CAPTURE AMÉLIORÉE)
+// JOUER UN TOUR (avec la nouvelle stratégie)
 // ============================================================
 async function playTurn(page, previousHandCount, failedValues) {
     await updatePlayedDominoes(page);
@@ -412,31 +371,14 @@ async function playTurn(page, previousHandCount, failedValues) {
         console.log(`│ Extrémités : ${ends.left} ← → ${ends.right}`);
     }
     
-    // Capture améliorée
-    const opponentDominoes = await getOpponentDominoesFromHTML(page);
-    if (opponentDominoes.length > 0) {
-        console.log('├─────────────────────────────────────────────┤');
-        console.log('│ 🕵️ DOMINOS ADVERSE (lus dans le HTML)      │');
-        opponentDominoes.forEach(d => console.log(`│   [${d}]`));
-        for (const d of opponentDominoes) {
-            knownOpponentDominoes.add(d);
-        }
-    } else {
-        // Compter sans se fier aux classes .domino (qui sont peut-être absentes)
-        const totalDominoes = await page.evaluate(() => {
-            return document.querySelectorAll('[data-left][data-right]').length;
-        });
-        console.log(`│ 🕵️ Aucun domino adverse détecté (total éléments data-left/data-right : ${totalDominoes})`);
-    }
-    
     const opponentCount = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('[data-left][data-right]')];
-        const board = [...document.querySelectorAll('.domino_board [data-left][data-right]')];
-        const mine = [...document.querySelectorAll('.mx_2 [data-left][data-right]')];
+        const all = [...document.querySelectorAll('.domino')];
+        const board = [...document.querySelectorAll('.domino_board .domino')];
+        const mine = [...document.querySelectorAll('.mx_2.domino')];
         return all.filter(d => !board.includes(d) && !mine.includes(d)).length;
     });
     
-    console.log(`│ Dominos adversaire (comptés via data-left/right) : ${opponentCount}`);
+    console.log(`│ Dominos adversaire (comptés) : ${opponentCount}`);
     console.log(`│ Mes dominos : ${fullHand.length}`);
     console.log('├─────────────────────────────────────────────┤');
     console.log('│ 🃏 MA MAIN                                  │');
@@ -451,14 +393,12 @@ async function playTurn(page, previousHandCount, failedValues) {
         return { status: 'skipped' };
     }
 
-    const myHandSet = new Set(hand.map(d => d.value));
+    const myHandSet = new Set(fullHand.map(d => d.value));
     const unknownSet = getUnknownSet(myHandSet);
-    const myHandAll = [...myHandSet].map(v => {
-        const [a, b] = v.split(':').map(Number);
-        return { value: v, leftVal: a.toString(), rightVal: b.toString() };
-    });
+    const opponentPossibleHand = getOpponentPossibleHand(unknownSet);
+    const myHandAll = fullHand.map(d => ({ value: d.value, leftVal: d.leftVal, rightVal: d.rightVal }));
     
-    const chosen = chooseBestDomino(hand, ends, playedDominoes, unknownSet, myHandAll);
+    const chosen = chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll);
     console.log(`│ 🧠 CHOIX EXPERT : [${chosen.leftVal}|${chosen.rightVal}]`);
     console.log('└─────────────────────────────────────────────┘\n');
 
@@ -497,13 +437,15 @@ async function playTurn(page, previousHandCount, failedValues) {
             console.log('↔️ Choix de côté nécessaire');
             await delay(1000);
 
-            const myHandValues = new Set((await getFullHand(page)).map(d => d.value));
+            // Déterminer le meilleur côté selon le score
+            const myHandValues = new Set(fullHand.map(d => d.value));
             const unknownSetEval = getUnknownSet(myHandValues);
-            const opponentPossibleHand = getOpponentPossibleHand(unknownSetEval);
+            const opponentPossibleHandEval = getOpponentPossibleHand(unknownSetEval);
 
-            const leftScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-            const rightScore = scoreMoveExpert(chosen, ends, hand, opponentPossibleHand, unknownSetEval, 2);
-            const chooseLeft = leftScore >= rightScore;
+            const scoreLeft = scoreMoveImproved(chosen, ends, myHandAll, opponentPossibleHandEval);
+            const invertedEnds = { left: ends.right, right: ends.left };
+            const scoreRight = scoreMoveImproved(chosen, invertedEnds, myHandAll, opponentPossibleHandEval);
+            const chooseLeft = scoreLeft >= scoreRight;
             console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
             const sideSelector = chooseLeft 
@@ -605,29 +547,16 @@ async function waitForMyTurnOrRoundEnd(page, timeout = 28000) {
 }
 
 // ============================================================
-// JOUER UNE MANCHE (avec délai d'attente pour les dominos adverses)
+// JOUER UNE MANCHE
 // ============================================================
 async function playOneRound(page, roundNumber) {
     console.log(`\n🎲 Début de la manche ${roundNumber} (EXPERT)`);
-    await delay(5000); // Attendre 5 secondes pour le chargement des dominos adverses
+    await delay(3000);
     playedDominoes.clear();
     opponentPassedValues.clear();
-    knownOpponentDominoes.clear();
     let turn = 1, consecutiveMisses = 0;
     let failedValues = new Set();
     let previousEnds = null;
-
-    // Capture initiale après un délai
-    const initial = await getOpponentDominoesFromHTML(page);
-    if (initial.length > 0) {
-        console.log('🕵️ DOMINOS ADVERSE EN DÉBUT DE MANCHE :');
-        initial.forEach(d => {
-            console.log(`   [${d}]`);
-            knownOpponentDominoes.add(d);
-        });
-    } else {
-        console.log('🕵️ Aucun domino adverse détecté en début de manche');
-    }
 
     while (true) {
         const board = await page.$('.domino_board');
