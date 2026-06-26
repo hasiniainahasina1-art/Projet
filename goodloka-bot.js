@@ -1,4 +1,4 @@
-// goodloka-bot.js – Bot de domino GoodLoka (STRATÉGIE EXPERT AMÉLIORÉE)
+// goodloka-bot.js – Bot de domino GoodLoka (SUIVI DES DOMINOS ADVERSES + STRATÉGIE AGRESSIVE)
 const { connect } = require('puppeteer-real-browser');
 const path = require('path');
 const fs = require('fs');
@@ -165,10 +165,11 @@ async function getFullHand(page) {
 }
 
 // ============================================================
-// SUIVI DES DOMINOS JOUÉS
+// SUIVI DES DOMINOS
 // ============================================================
-let playedDominoes = new Set();
-let opponentPassedValues = new Set();
+let playedDominoes = new Set();                // tous les dominos posés sur le plateau
+let opponentPassedValues = new Set();          // valeurs sur lesquelles l'adversaire a passé/poché
+let opponentPlayedDominoes = new Set();        // dominos que l'adversaire a posés (détectés)
 
 function normalize(v1, v2) {
     const a = parseInt(v1), b = parseInt(v2);
@@ -189,7 +190,7 @@ async function updatePlayedDominoes(page) {
 }
 
 // ============================================================
-// STRATÉGIE EXPERT AMÉLIORÉE
+// STRATÉGIE EXPERT FINALE
 // ============================================================
 function allDominoes() {
     const all = [];
@@ -197,23 +198,22 @@ function allDominoes() {
     return all;
 }
 
-// Ensemble des dominos encore inconnus (ni joués, ni dans notre main)
 function getUnknownSet(myHandValues) {
     const all = allDominoes();
     return new Set(all.filter(d => !playedDominoes.has(d.value) && !myHandValues.has(d.value)).map(d => d.value));
 }
 
-// Retourne les dominos possibles pour l'adversaire en tenant compte des passes
 function getOpponentPossibleHand(unknownSet) {
     const possible = new Set();
     for (const dom of unknownSet) {
         const [a, b] = dom.split(':').map(Number);
-        if (!opponentPassedValues.has(a) && !opponentPassedValues.has(b)) possible.add(dom);
+        if (!opponentPassedValues.has(a) && !opponentPassedValues.has(b) && !opponentPlayedDominoes.has(dom)) {
+            possible.add(dom);
+        }
     }
     return possible;
 }
 
-// Vérifie si l'adversaire possède un domino avec une valeur donnée
 function opponentHasValue(value, opponentPossibleHand) {
     for (const dom of opponentPossibleHand) {
         const [a, b] = dom.split(':').map(Number);
@@ -222,66 +222,56 @@ function opponentHasValue(value, opponentPossibleHand) {
     return false;
 }
 
-// Score d'un coup (amélioré)
-function scoreMoveImproved(domino, ends, myHand, opponentPossibleHand) {
+function scoreMoveFinal(domino, ends, myHand, opponentPossibleHand) {
     let score = 0;
     const valLeft = parseInt(domino.leftVal);
     const valRight = parseInt(domino.rightVal);
     const endLeft = parseInt(ends.left);
     const endRight = parseInt(ends.right);
 
-    // Vérifier si le domino correspond à au moins une extrémité
     const matchesLeft = (valLeft === endLeft || valRight === endLeft);
     const matchesRight = (valLeft === endRight || valRight === endRight);
     if (!matchesLeft && !matchesRight) return -Infinity;
 
-    // Déterminer les nouvelles extrémités après avoir posé le domino
     let newLeft = endLeft, newRight = endRight;
-    if (matchesLeft) {
+    if (matchesLeft && !matchesRight) {
         newLeft = (valLeft === endLeft) ? valRight : valLeft;
-    } else if (matchesRight) {
+    } else if (!matchesLeft && matchesRight) {
         newRight = (valLeft === endRight) ? valRight : valLeft;
+    } else {
+        // correspond aux deux extrémités : on teste les deux possibilités plus tard
     }
-    // Si les deux correspondent, on choisit le meilleur score dans les deux cas plus tard
-    // Pour l'instant on prend le premier (gauche) comme estimation
 
-    // 1. Coup gagnant immédiat (on finit la manche)
+    // 1. Victoire immédiate
     if (myHand.length === 1) {
-        score += 10000; // énorme bonus
+        score += 100000;
     }
 
-    // 2. Blocage de l'adversaire
+    // 2. Blocage
     if (newLeft === newRight) {
-        const value = newLeft;
-        if (!opponentHasValue(value, opponentPossibleHand)) {
-            // L'adversaire ne peut pas jouer -> blocage parfait
-            score += 5000;
+        if (!opponentHasValue(newLeft, opponentPossibleHand)) {
+            score += 5000; // blocage parfait
         } else {
-            // Blocage partiel
             score += 20;
         }
     }
 
-    // 3. Réduction de la somme de notre main (on veut se débarrasser des gros dominos)
+    // 3. Réduction de la somme
     const mySum = myHand.reduce((sum, d) => sum + parseInt(d.leftVal) + parseInt(d.rightVal), 0);
     const dominoSum = valLeft + valRight;
     const remainingSum = mySum - dominoSum;
-    score -= remainingSum * 10; // malus proportionnel à la somme restante
+    score -= remainingSum * 10;
 
-    // 4. Se débarrasser des doubles (ils sont difficiles à placer)
+    // 4. Doubles
     if (domino.leftVal === domino.rightVal) {
         score += 50;
     }
 
-    // 5. Éviter d'ouvrir une valeur que l'adversaire possède
-    if (opponentHasValue(newLeft, opponentPossibleHand)) {
-        score -= 30;
-    }
-    if (opponentHasValue(newRight, opponentPossibleHand)) {
-        score -= 30;
-    }
+    // 5. Ne pas ouvrir une valeur que l'adversaire possède
+    if (opponentHasValue(newLeft, opponentPossibleHand)) score -= 30;
+    if (opponentHasValue(newRight, opponentPossibleHand)) score -= 30;
 
-    // 6. Bonus si on garde le contrôle de valeurs qu'on a en main
+    // 6. Contrôle
     const myValues = new Set(myHand.map(d => d.leftVal).concat(myHand.map(d => d.rightVal)));
     if (myValues.has(newLeft.toString())) score += 15;
     if (myValues.has(newRight.toString())) score += 15;
@@ -289,10 +279,8 @@ function scoreMoveImproved(domino, ends, myHand, opponentPossibleHand) {
     return score;
 }
 
-// Choisir le meilleur domino avec la nouvelle fonction de score
-function chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll) {
+function chooseBestDominoFinal(hand, ends, opponentPossibleHand, myHandAll) {
     if (!ends) {
-        // Premier coup : jouer le plus gros double, sinon le plus lourd
         const doubles = hand.filter(d => d.leftVal === d.rightVal);
         if (doubles.length > 0) {
             doubles.sort((a, b) => parseInt(b.leftVal) - parseInt(a.leftVal));
@@ -302,7 +290,6 @@ function chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll) {
         return hand[0];
     }
 
-    // Si on peut gagner maintenant, on le fait
     if (hand.length === 1 && myHandAll.length === 1) {
         console.log('🏆 COUP GAGNANT DÉTECTÉ !');
         return hand[0];
@@ -312,26 +299,25 @@ function chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll) {
     let bestScore = -Infinity;
 
     for (const domino of hand) {
-        // Si le domino peut être posé des deux côtés, on teste les deux et on garde le meilleur
         const canLeft = (domino.leftVal === ends.left || domino.rightVal === ends.left);
         const canRight = (domino.leftVal === ends.right || domino.rightVal === ends.right);
 
-        let score = -Infinity;
-
         if (canLeft && canRight) {
-            // Tester les deux placements
-            const scoreLeft = scoreMoveImproved(domino, ends, myHandAll, opponentPossibleHand);
-            // Pour tester le côté droit, on inverse temporairement les extrémités
+            // Tester les deux côtés
+            const scoreLeft = scoreMoveFinal(domino, ends, myHandAll, opponentPossibleHand);
             const invertedEnds = { left: ends.right, right: ends.left };
-            const scoreRight = scoreMoveImproved(domino, invertedEnds, myHandAll, opponentPossibleHand);
-            score = Math.max(scoreLeft, scoreRight);
-        } else {
-            score = scoreMoveImproved(domino, ends, myHandAll, opponentPossibleHand);
-        }
-
-        if (score > bestScore) {
-            bestScore = score;
-            best = domino;
+            const scoreRight = scoreMoveFinal(domino, invertedEnds, myHandAll, opponentPossibleHand);
+            const bestLocal = Math.max(scoreLeft, scoreRight);
+            if (bestLocal > bestScore) {
+                bestScore = bestLocal;
+                best = domino;
+            }
+        } else if (canLeft || canRight) {
+            const score = scoreMoveFinal(domino, ends, myHandAll, opponentPossibleHand);
+            if (score > bestScore) {
+                bestScore = score;
+                best = domino;
+            }
         }
     }
 
@@ -339,9 +325,9 @@ function chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll) {
 }
 
 // ============================================================
-// JOUER UN TOUR (avec la nouvelle stratégie)
+// JOUER UN TOUR
 // ============================================================
-async function playTurn(page, previousHandCount, failedValues) {
+async function playTurn(page, previousHandCount, failedValues, boardBefore) {
     await updatePlayedDominoes(page);
     await killChromePopups(page);
     await adjustViewForDominoes(page);
@@ -370,15 +356,19 @@ async function playTurn(page, previousHandCount, failedValues) {
         console.log(`│ Plateau : ${boardDominoes.join(' ')}`);
         console.log(`│ Extrémités : ${ends.left} ← → ${ends.right}`);
     }
+
+    // Détection automatique des dominos joués par l'adversaire
+    if (boardBefore && boardBefore.length > 0) {
+        const previousSet = new Set(boardBefore);
+        const currentSet = new Set(boardDominoes);
+        const newDominoes = [...currentSet].filter(d => !previousSet.has(d));
+        for (const d of newDominoes) {
+            opponentPlayedDominoes.add(d);
+            console.log(`│ 🃏 Adversaire a posé : ${d}`);
+        }
+    }
     
-    const opponentCount = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('.domino')];
-        const board = [...document.querySelectorAll('.domino_board .domino')];
-        const mine = [...document.querySelectorAll('.mx_2.domino')];
-        return all.filter(d => !board.includes(d) && !mine.includes(d)).length;
-    });
-    
-    console.log(`│ Dominos adversaire (comptés) : ${opponentCount}`);
+    console.log(`│ Dominos adverses déjà posés : ${opponentPlayedDominoes.size}`);
     console.log(`│ Mes dominos : ${fullHand.length}`);
     console.log('├─────────────────────────────────────────────┤');
     console.log('│ 🃏 MA MAIN                                  │');
@@ -390,7 +380,7 @@ async function playTurn(page, previousHandCount, failedValues) {
     if (hand.length === 0) {
         console.log('│ 🤷 Aucun domino jouable                    │');
         console.log('└─────────────────────────────────────────────┘\n');
-        return { status: 'skipped' };
+        return { status: 'skipped', currentBoard: boardDominoes };
     }
 
     const myHandSet = new Set(fullHand.map(d => d.value));
@@ -398,7 +388,7 @@ async function playTurn(page, previousHandCount, failedValues) {
     const opponentPossibleHand = getOpponentPossibleHand(unknownSet);
     const myHandAll = fullHand.map(d => ({ value: d.value, leftVal: d.leftVal, rightVal: d.rightVal }));
     
-    const chosen = chooseBestDominoImproved(hand, ends, opponentPossibleHand, myHandAll);
+    const chosen = chooseBestDominoFinal(hand, ends, opponentPossibleHand, myHandAll);
     console.log(`│ 🧠 CHOIX EXPERT : [${chosen.leftVal}|${chosen.rightVal}]`);
     console.log('└─────────────────────────────────────────────┘\n');
 
@@ -427,7 +417,7 @@ async function playTurn(page, previousHandCount, failedValues) {
         break;
     }
 
-    if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value }; }
+    if (!success) { console.log('❌ Impossible de cliquer sur le domino.'); return { status: 'failed', failedValue: chosen.value, currentBoard: boardDominoes }; }
 
     // Gérer le choix du côté
     if (ends) {
@@ -437,14 +427,13 @@ async function playTurn(page, previousHandCount, failedValues) {
             console.log('↔️ Choix de côté nécessaire');
             await delay(1000);
 
-            // Déterminer le meilleur côté selon le score
             const myHandValues = new Set(fullHand.map(d => d.value));
             const unknownSetEval = getUnknownSet(myHandValues);
             const opponentPossibleHandEval = getOpponentPossibleHand(unknownSetEval);
 
-            const scoreLeft = scoreMoveImproved(chosen, ends, myHandAll, opponentPossibleHandEval);
+            const scoreLeft = scoreMoveFinal(chosen, ends, myHandAll, opponentPossibleHandEval);
             const invertedEnds = { left: ends.right, right: ends.left };
-            const scoreRight = scoreMoveImproved(chosen, invertedEnds, myHandAll, opponentPossibleHandEval);
+            const scoreRight = scoreMoveFinal(chosen, invertedEnds, myHandAll, opponentPossibleHandEval);
             const chooseLeft = scoreLeft >= scoreRight;
             console.log(`   → Choix : ${chooseLeft ? 'GAUCHE' : 'DROITE'}`);
 
@@ -474,7 +463,7 @@ async function playTurn(page, previousHandCount, failedValues) {
     else { await page.keyboard.press('Enter'); console.log('⏎ Entrée'); }
 
     await delay(1500);
-    return { status: 'played' };
+    return { status: 'played', currentBoard: boardDominoes };
 }
 
 // ============================================================
@@ -554,9 +543,11 @@ async function playOneRound(page, roundNumber) {
     await delay(3000);
     playedDominoes.clear();
     opponentPassedValues.clear();
+    opponentPlayedDominoes.clear();
     let turn = 1, consecutiveMisses = 0;
     let failedValues = new Set();
     let previousEnds = null;
+    let boardBefore = [];
 
     while (true) {
         const board = await page.$('.domino_board');
@@ -582,7 +573,7 @@ async function playOneRound(page, roundNumber) {
 
         const fullHand = await getFullHand(page);
         const handSizeBefore = fullHand.length;
-        const result = await playTurn(page, handSizeBefore, failedValues);
+        const result = await playTurn(page, handSizeBefore, failedValues, boardBefore);
 
         if (result.status === 'failed') {
             if (result.failedValue) failedValues.add(result.failedValue);
@@ -591,6 +582,7 @@ async function playOneRound(page, roundNumber) {
             failedValues.clear();
         }
 
+        boardBefore = result.currentBoard || [];
         previousEnds = await getBoardEnds(page);
         if (await isRoundOver(page)) break;
         if (await isMatchOver(page)) return 'match_over';
